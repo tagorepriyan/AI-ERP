@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-erp.local/schemas/document-extraction.schema.json",
+  "title": "Document Extraction",
+  "type": "object",
+  "required": ["provider", "model", "confidenceScore", "events"],
+  "properties": {
+    "provider": { "type": "string" },
+    "model": { "type": "string" },
+    "confidenceScore": { "type": "number", "minimum": 0, "maximum": 1 },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["eventId", "confidence"],
+        "properties": {
+          "eventId": { "type": "string" },
+          "date": { "type": "string" },
+          "startTime": { "type": "string" },
+          "endTime": { "type": "string" },
+          "subjectCode": { "type": "string" },
+          "subjectName": { "type": "string" },
+          "instructions": { "type": "string" },
+          "departments": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "years": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "sections": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

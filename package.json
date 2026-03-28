@@ -1,0 +1,14 @@
+{
+  "name": "ai-erp",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AI-powered ERP for academic document intelligence",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "npm --workspace @ai-erp/api run dev",
+    "start:api": "npm --workspace @ai-erp/api run start"
+  }
+}

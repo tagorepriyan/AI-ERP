@@ -1,0 +1,8 @@
+{
+  "name": "@ai-erp/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "echo \"Frontend scaffold pending: connect React app in next step\""
+  }
+}
