@@ -9,6 +9,8 @@
   ],
   "scripts": {
     "dev:api": "npm --workspace @ai-erp/api run dev",
-    "start:api": "npm --workspace @ai-erp/api run start"
+    "start:api": "npm --workspace @ai-erp/api run start",
+    "dev:web": "npm --workspace @ai-erp/web run dev",
+    "build:web": "npm --workspace @ai-erp/web run build"
   }
 }
