@@ -1,7 +1,39 @@
 const path = require("path");
+const fs = require("fs");
 const dotenv = require("dotenv");
 
-dotenv.config({ path: path.resolve(process.cwd(), ".env") });
+const cwdEnvPath = path.resolve(process.cwd(), ".env");
+const repoRootEnvPath = path.resolve(__dirname, "../../../../.env");
+const envPath = fs.existsSync(cwdEnvPath) ? cwdEnvPath : repoRootEnvPath;
+
+dotenv.config({ path: envPath });
+
+function normalizeApiKey(value) {
+  const key = (value || "").trim();
+  if (!key) {
+    return "";
+  }
+
+  if (["your_api_key_here", "replace_me", "changeme"].includes(key.toLowerCase())) {
+    return "";
+  }
+
+  return key;
+}
+
+function parseProviderOrder(value) {
+  const allowed = ["gemini", "groq", "openrouter"];
+  const parsed = (value || "gemini,groq,openrouter")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => allowed.includes(item));
+
+  return parsed.length ? parsed : allowed;
+}
+
+const geminiApiKey = normalizeApiKey(process.env.GEMINI_API_KEY);
+const groqApiKey = normalizeApiKey(process.env.GROQ_API_KEY);
+const openRouterApiKey = normalizeApiKey(process.env.OPENROUTER_API_KEY);
 
 const env = {
   nodeEnv: process.env.NODE_ENV || "development",
@@ -10,9 +42,25 @@ const env = {
   uploadDir: process.env.UPLOAD_DIR || "apps/api/uploads",
   defaultTenantId: process.env.DEFAULT_TENANT_ID || "default-campus",
   ai: {
-    apiKey: process.env.GEMINI_API_KEY || "",
-    model: process.env.AI_MODEL || "gemini-2.0-flash",
-    timeoutMs: Number(process.env.AI_TIMEOUT_MS || 30000)
+    timeoutMs: Number(process.env.AI_TIMEOUT_MS || 30000),
+    providerOrder: parseProviderOrder(process.env.AI_PROVIDER_ORDER),
+    gemini: {
+      apiKey: geminiApiKey,
+      model: process.env.GEMINI_MODEL || process.env.AI_MODEL || "gemini-2.0-flash"
+    },
+    groq: {
+      apiKey: groqApiKey,
+      model: process.env.GROQ_MODEL || "llama-3.1-8b-instant",
+      baseUrl: process.env.GROQ_BASE_URL || "https://api.groq.com/openai/v1"
+    },
+    openrouter: {
+      apiKey: openRouterApiKey,
+      model: process.env.OPENROUTER_MODEL || "meta-llama/llama-3.1-8b-instruct:free",
+      baseUrl: process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1"
+    },
+    // Backward-compatible aliases (Gemini defaults)
+    apiKey: geminiApiKey,
+    model: process.env.GEMINI_MODEL || process.env.AI_MODEL || "gemini-2.0-flash"
   }
 };
 

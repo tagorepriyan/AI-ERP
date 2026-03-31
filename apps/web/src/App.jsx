@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
-const API_BASE = "http://localhost:4000";
+const API_BASE =
+  import.meta.env.VITE_API_BASE_URL || `${window.location.protocol}//${window.location.hostname}:4000`;
 
 function App() {
   const [tenantId, setTenantId] = useState("default-campus");
@@ -12,8 +13,77 @@ function App() {
   const [documents, setDocuments] = useState([]);
   const [selectedDoc, setSelectedDoc] = useState(null);
   const [loadingDocs, setLoadingDocs] = useState(false);
+  const [viewMode, setViewMode] = useState("table"); // "table", "timeline", "json"
+  const [filterDept, setFilterDept] = useState("");
+  const [filterYear, setFilterYear] = useState("");
+  const [filterSection, setFilterSection] = useState("");
 
   const headers = useMemo(() => ({ "x-tenant-id": tenantId }), [tenantId]);
+
+  const filteredEvents = useMemo(() => {
+    if (!selectedDoc?.latestVersion?.extraction?.events) {
+      return [];
+    }
+
+    return selectedDoc.latestVersion.extraction.events.filter((event) => {
+      if (filterDept && !event.departments.includes(filterDept)) {
+        return false;
+      }
+      if (filterYear && !event.years.includes(filterYear)) {
+        return false;
+      }
+      if (filterSection && !event.sections.includes(filterSection)) {
+        return false;
+      }
+      return true;
+    });
+  }, [selectedDoc, filterDept, filterYear, filterSection]);
+
+  const availableFilters = useMemo(() => {
+    if (!selectedDoc?.latestVersion?.extraction?.events) {
+      return { departments: [], years: [], sections: [] };
+    }
+
+    const allEvents = selectedDoc.latestVersion.extraction.events;
+    const departments = [...new Set(allEvents.flatMap((e) => e.departments))].sort();
+    const years = [...new Set(allEvents.flatMap((e) => e.years))].sort();
+    const sections = [...new Set(allEvents.flatMap((e) => e.sections))].sort();
+
+    return { departments, years, sections };
+  }, [selectedDoc]);
+
+  const sortedByDeadline = useMemo(() => {
+    return [...filteredEvents].sort((a, b) => {
+      if (!a.date && !b.date) return 0;
+      if (!a.date) return 1;
+      if (!b.date) return -1;
+      return new Date(a.date) - new Date(b.date);
+    });
+  }, [filteredEvents]);
+
+  // Group events intelligently by subject/category
+  const groupedEvents = useMemo(() => {
+    if (!filteredEvents.length) return [];
+
+    const grouped = {};
+    filteredEvents.forEach((event) => {
+      const groupKey = event.subjectName || event.subjectCode || "Uncategorized";
+      if (!grouped[groupKey]) {
+        grouped[groupKey] = [];
+      }
+      grouped[groupKey].push(event);
+    });
+
+    return Object.entries(grouped).map(([key, events]) => ({
+      name: key,
+      events: events.sort((a, b) => {
+        if (!a.date && !b.date) return 0;
+        if (!a.date) return 1;
+        if (!b.date) return -1;
+        return new Date(a.date) - new Date(b.date);
+      })
+    }));
+  }, [filteredEvents]);
 
   async function fetchDocuments() {
     setLoadingDocs(true);
@@ -179,7 +249,191 @@ function App() {
             <p>
               <strong>Event Count:</strong> {selectedDoc.latestVersion?.extraction?.events?.length || 0}
             </p>
-            <pre>{JSON.stringify(selectedDoc.latestVersion?.extraction || {}, null, 2)}</pre>
+
+            {/* View Mode Tabs */}
+            <div className="view-tabs">
+              <button
+                className={`tab-btn ${viewMode === "table" ? "active" : ""}`}
+                onClick={() => setViewMode("table")}
+              >
+                Table View
+              </button>
+              <button
+                className={`tab-btn ${viewMode === "timeline" ? "active" : ""}`}
+                onClick={() => setViewMode("timeline")}
+              >
+                Timeline
+              </button>
+              <button
+                className={`tab-btn ${viewMode === "json" ? "active" : ""}`}
+                onClick={() => setViewMode("json")}
+              >
+                JSON
+              </button>
+            </div>
+
+            {/* Filters */}
+            {(viewMode === "table" || viewMode === "timeline") && (
+              <div className="filters-section">
+                <h4>Filters</h4>
+                {availableFilters.departments.length > 0 && (
+                  <label>
+                    Department
+                    <select value={filterDept} onChange={(e) => setFilterDept(e.target.value)}>
+                      <option value="">All</option>
+                      {availableFilters.departments.map((dept) => (
+                        <option key={dept} value={dept}>
+                          {dept}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+
+                {availableFilters.years.length > 0 && (
+                  <label>
+                    Year
+                    <select value={filterYear} onChange={(e) => setFilterYear(e.target.value)}>
+                      <option value="">All</option>
+                      {availableFilters.years.map((year) => (
+                        <option key={year} value={year}>
+                          {year}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+
+                {availableFilters.sections.length > 0 && (
+                  <label>
+                    Section
+                    <select value={filterSection} onChange={(e) => setFilterSection(e.target.value)}>
+                      <option value="">All</option>
+                      {availableFilters.sections.map((section) => (
+                        <option key={section} value={section}>
+                          {section}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+
+                {(filterDept || filterYear || filterSection) && (
+                  <button
+                    className="secondary clear-filters"
+                    onClick={() => {
+                      setFilterDept("");
+                      setFilterYear("");
+                      setFilterSection("");
+                    }}
+                  >
+                    Clear Filters
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Table View */}
+            {viewMode === "table" && (
+              <div className="table-view">
+                {filteredEvents.length === 0 ? (
+                  <p className="no-events">No events match the selected filters.</p>
+                ) : (
+                  <div className="grouped-cards">
+                    {groupedEvents.map((group, groupIndex) => (
+                      <div key={groupIndex} className="event-group-card">
+                        <div className="group-header">
+                          <h3>{group.name}</h3>
+                          <span className="event-count">{group.events.length} item(s)</span>
+                        </div>
+
+                        {group.events.map((event, eventIndex) => (
+                          <div key={eventIndex} className="event-item">
+                            {event.date && (
+                              <div className="event-date">
+                                <span className="label">Deadline:</span>
+                                <span className="value">{event.date}</span>
+                              </div>
+                            )}
+
+                            {event.instructions && (
+                              <div className="event-instruction">
+                                <span className="label">Action Required:</span>
+                                <p className="value">{event.instructions}</p>
+                              </div>
+                            )}
+
+                            {event.subjectCode && (
+                              <div className="event-code">
+                                <span className="label">Code:</span>
+                                <span className="value">{event.subjectCode}</span>
+                              </div>
+                            )}
+
+                            {(event.departments.length > 0 || event.years.length > 0 || event.sections.length > 0) && (
+                              <div className="event-meta">
+                                {event.departments.length > 0 && (
+                                  <span className="meta-item">
+                                    <strong>Dept:</strong> {event.departments.join(", ")}
+                                  </span>
+                                )}
+                                {event.years.length > 0 && (
+                                  <span className="meta-item">
+                                    <strong>Year:</strong> {event.years.join(", ")}
+                                  </span>
+                                )}
+                                {event.sections.length > 0 && (
+                                  <span className="meta-item">
+                                    <strong>Section:</strong> {event.sections.join(", ")}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+
+                            <div className="event-confidence">
+                              <span className="confidence-badge">{(event.confidence * 100).toFixed(0)}% confidence</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Timeline View */}
+            {viewMode === "timeline" && (
+              <div className="timeline-view">
+                {sortedByDeadline.length === 0 ? (
+                  <p className="no-events">No events match the selected filters.</p>
+                ) : (
+                  <div className="timeline">
+                    {sortedByDeadline.map((event, index) => (
+                      <div key={event.eventId || index} className="timeline-item">
+                        <div className="timeline-date">{event.date || "No Date"}</div>
+                        <div className="timeline-content">
+                          <h4>{event.subjectName || event.subjectCode || "Unknown Event"}</h4>
+                          {event.subjectCode && <p><strong>Code:</strong> {event.subjectCode}</p>}
+                          {event.instructions && <p><strong>Action:</strong> {event.instructions}</p>}
+                          {event.departments.length > 0 && (
+                            <p><strong>Dept:</strong> {event.departments.join("; ")}</p>
+                          )}
+                          <div className="timeline-meta">
+                            <span className="confidence">{(event.confidence * 100).toFixed(0)}% confidence</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* JSON View */}
+            {viewMode === "json" && (
+              <pre className="json-view">{JSON.stringify(selectedDoc.latestVersion?.extraction || {}, null, 2)}</pre>
+            )}
           </div>
         )}
       </section>

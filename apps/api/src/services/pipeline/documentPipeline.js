@@ -33,7 +33,9 @@ async function processUploadedDocument({
   try {
     const extraction = await extractStructuredData({
       docType,
-      rawText: parserResult.rawText
+      rawText: parserResult.rawText,
+      filePath: file.path,
+      pageCount: parserResult.pageCount
     });
 
     const version = await DocumentVersion.create({
