@@ -35,7 +35,8 @@ async function processUploadedDocument({
       docType,
       rawText: parserResult.rawText,
       filePath: file.path,
-      pageCount: parserResult.pageCount
+      pageCount: parserResult.pageCount,
+      structuredData: parserResult.structuredData // Pass the grid-based data
     });
 
     const version = await DocumentVersion.create({

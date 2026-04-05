@@ -1,29 +1,72 @@
 const fs = require("fs/promises");
-const { exec } = require("child_process");
+const { execFile } = require("child_process");
 const path = require("path");
 const util = require("util");
-const execPromise = util.promisify(exec);
 const pdf = require("pdf-parse");
+
+const execFilePromise = util.promisify(execFile);
+
+function parseHybridOutput(stdout) {
+  const text = (stdout || "").trim();
+
+  if (!text) {
+    throw new Error("Hybrid OCR returned empty output");
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch (_error) {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+
+    if (start !== -1 && end > start) {
+      return JSON.parse(text.slice(start, end + 1));
+    }
+
+    throw new Error("Hybrid OCR output was not valid JSON");
+  }
+}
+
+async function runPythonHybridParser(filePath) {
+  const pyScriptPath = path.join(__dirname, "../../../scripts/hybrid_ocr.py");
+  const candidates = [
+    process.env.PYTHON_EXECUTABLE
+      ? { command: process.env.PYTHON_EXECUTABLE, args: [pyScriptPath, "--file", filePath] }
+      : null,
+    { command: "python", args: [pyScriptPath, "--file", filePath] },
+    { command: "py", args: ["-3", pyScriptPath, "--file", filePath] }
+  ].filter(Boolean);
+
+  let lastError = null;
+
+  for (const candidate of candidates) {
+    try {
+      const { stdout } = await execFilePromise(candidate.command, candidate.args, {
+        windowsHide: true,
+        maxBuffer: 10 * 1024 * 1024
+      });
+      return parseHybridOutput(stdout);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error("Unable to execute Python hybrid OCR script");
+}
 
 async function parsePdf(filePath) {
   try {
-    // Determine the path to our hybrid python script
-    const pyScriptPath = path.join(__dirname, "../../../scripts/hybrid_ocr.py");
-    
-    // Command to run python. Using 'python' - you may need 'python3' based on environment
-    // Quoting the filePath to handle spaces
-    const { stdout, stderr } = await execPromise(`python "${pyScriptPath}" --file "${filePath}"`);
-    
-    const result = JSON.parse(stdout);
-    
-    if (result.error) {
+    const result = await runPythonHybridParser(filePath);
+
+    if (result?.error) {
       console.warn(`[Python OCR Error] ${result.error}. Falling back to node pdf-parse.`);
       return await fallbackParse(filePath);
     }
 
     return {
       rawText: result.rawText || "",
-      pageCount: result.pageCount || 0
+      pageCount: result.pages ? result.pages.length : (result.pageCount || 0),
+      structuredData: result // Pass the whole object (structure_type: 'grid_timetable')
     };
   } catch (error) {
     console.error(`[Python hybrid parser failed]`, error.message);
