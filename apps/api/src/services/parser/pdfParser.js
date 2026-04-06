@@ -63,8 +63,17 @@ async function parsePdf(filePath) {
       return await fallbackParse(filePath);
     }
 
+    const pageRawText = Array.isArray(result.pages)
+      ? result.pages
+          .map((page) => (page && typeof page.rawText === "string" ? page.rawText : ""))
+          .join("\n")
+          .trim()
+      : "";
+
+    const rawText = (typeof result.rawText === "string" ? result.rawText : pageRawText) || "";
+
     return {
-      rawText: result.rawText || "",
+      rawText,
       pageCount: result.pages ? result.pages.length : (result.pageCount || 0),
       structuredData: result // Pass the whole object (structure_type: 'grid_timetable')
     };

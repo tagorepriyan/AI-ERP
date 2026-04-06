@@ -30,6 +30,343 @@ function normalizeEvent(item, index) {
   };
 }
 
+function normalizeStringArray(value) {
+  if (Array.isArray(value)) {
+    return value.map(normalizeTextValue).filter(Boolean);
+  }
+
+  if (typeof value === "string") {
+    return value
+      .split(/[,/;|]/)
+      .map(normalizeTextValue)
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
+function normalizeTimeRange(value) {
+  const normalized = normalizeTextValue(value);
+
+  if (!normalized) {
+    return { startTime: "", endTime: "" };
+  }
+
+  const rangeMatch = normalized.match(
+    /(\d{1,2}[:.]\d{2}\s*(?:AM|PM|A\.?M\.?|P\.?M\.?)?)\s*(?:-|–|to|until|through)\s*(\d{1,2}[:.]\d{2}\s*(?:AM|PM|A\.?M\.?|P\.?M\.?)?)/i
+  );
+
+  if (rangeMatch) {
+    return {
+      startTime: normalizeTextValue(rangeMatch[1]),
+      endTime: normalizeTextValue(rangeMatch[2])
+    };
+  }
+
+  return { startTime: normalized, endTime: "" };
+}
+
+function extractSemester(text) {
+  const normalized = normalizeTextValue(text);
+  const patterns = [
+    /\b(?:I|II|III|IV|V|VI|VII|VIII|IX|X|1ST|2ND|3RD|4TH|5TH|6TH|7TH|8TH|9TH|10TH)\s*(?:SEM(?:ESTER)?)\b/i,
+    /\b(?:SEM(?:ESTER)?)\s*[:\-]?\s*(?:I|II|III|IV|V|VI|VII|VIII|IX|X|1ST|2ND|3RD|4TH|5TH|6TH|7TH|8TH|9TH|10TH)\b/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (match) {
+      return normalizeTextValue(match[0]).replace(/\s+/g, " ").replace(/\bSEM\b/i, "SEMESTER");
+    }
+  }
+
+  return "";
+}
+
+function extractTitleCandidate(text) {
+  const lines = (text || "")
+    .split(/\r?\n/)
+    .map(normalizeTextValue)
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const upper = line.toUpperCase();
+    if (upper.includes("TIMETABLE") || upper.includes("TIME TABLE") || upper.includes("EXAM")) {
+      return line;
+    }
+  }
+
+  return lines[0] || "";
+}
+
+function normalizeJsonValue(value) {
+  if (typeof value === "string") {
+    return normalizeTextValue(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(normalizeJsonValue).filter((item) => {
+      if (typeof item === "string") {
+        return Boolean(item);
+      }
+      if (Array.isArray(item)) {
+        return item.length > 0;
+      }
+      if (item && typeof item === "object") {
+        return Object.keys(item).length > 0;
+      }
+      return item !== null && item !== undefined;
+    });
+  }
+
+  if (value && typeof value === "object") {
+    const normalized = {};
+    for (const [key, nestedValue] of Object.entries(value)) {
+      const cleaned = normalizeJsonValue(nestedValue);
+      if (typeof cleaned === "string" && !cleaned) {
+        continue;
+      }
+      if (Array.isArray(cleaned) && cleaned.length === 0) {
+        continue;
+      }
+      if (cleaned && typeof cleaned === "object" && !Array.isArray(cleaned) && Object.keys(cleaned).length === 0) {
+        continue;
+      }
+      normalized[key] = cleaned;
+    }
+    return normalized;
+  }
+
+  return value;
+}
+
+function normalizeDocumentType(rawType) {
+  const valid = new Set(["timetable", "circular", "policy", "announcement", "instruction", "mixed"]);
+
+  if (Array.isArray(rawType)) {
+    const cleaned = rawType.map((item) => normalizeTextValue(item).toLowerCase()).filter((item) => valid.has(item));
+    if (cleaned.length === 1) {
+      return cleaned[0];
+    }
+    return cleaned.length > 1 ? "mixed" : "announcement";
+  }
+
+  const cleaned = normalizeTextValue(rawType).toLowerCase();
+  if (valid.has(cleaned)) {
+    return cleaned;
+  }
+
+  return "announcement";
+}
+
+function normalizeStructuredDocument(parsed, fallbackDocType) {
+  const sections = parsed?.sections && typeof parsed.sections === "object" ? parsed.sections : {};
+  const normalizedSections = {
+    schedule: Array.isArray(sections.schedule) ? normalizeJsonValue(sections.schedule) : [],
+    rules: Array.isArray(sections.rules) ? normalizeJsonValue(sections.rules) : [],
+    instructions: Array.isArray(sections.instructions) ? normalizeJsonValue(sections.instructions) : [],
+    restrictions: Array.isArray(sections.restrictions) ? normalizeJsonValue(sections.restrictions) : [],
+    announcements: Array.isArray(sections.announcements) ? normalizeJsonValue(sections.announcements) : []
+  };
+
+  const fallbackType =
+    fallbackDocType === "exam_timetable" ? "timetable" : fallbackDocType === "circular" ? "circular" : "announcement";
+
+  return {
+    documentType: normalizeDocumentType(parsed?.documentType || parsed?.documentTypes || fallbackType),
+    title: normalizeTextValue(parsed?.title),
+    date: normalizeTextValue(parsed?.date),
+    summary: normalizeTextValue(parsed?.summary),
+    intent: normalizeJsonValue(
+      parsed?.intent || {
+        purpose: normalizeTextValue(parsed?.purpose),
+        mode: normalizeTextValue(parsed?.mode || parsed?.intentType)
+      }
+    ),
+    targetAudience: normalizeStringArray(parsed?.targetAudience),
+    semester: normalizeTextValue(parsed?.semester),
+    examSession: {
+      startTime: normalizeTextValue(parsed?.examSession?.startTime),
+      endTime: normalizeTextValue(parsed?.examSession?.endTime)
+    },
+    schedule: Array.isArray(parsed?.schedule) ? normalizeJsonValue(parsed.schedule) : [],
+    sections: normalizedSections
+  };
+}
+
+function buildStructuredFromEvents(docType, events) {
+  const mappedType = docType === "exam_timetable" ? "timetable" : docType === "circular" ? "circular" : "announcement";
+  return {
+    documentType: mappedType,
+    title: "",
+    date: events.find((event) => event.date)?.date || "",
+    summary: events.length
+      ? `Extracted ${events.length} structured item${events.length > 1 ? "s" : ""} from document.`
+      : "No structured data could be extracted.",
+    intent: {
+      purpose: docType === "exam_timetable" ? "Publish exam schedule" : "Inform students and faculty",
+      mode: docType === "exam_timetable" ? "scheduling" : "informing"
+    },
+    targetAudience: [],
+    semester: "",
+    examSession: { startTime: "", endTime: "" },
+    schedule: [],
+    sections: {
+      schedule: events.map((event) => ({
+        date: event.date,
+        startTime: event.startTime,
+        endTime: event.endTime,
+        subjectCode: event.subjectCode,
+        subjectName: event.subjectName,
+        departments: event.departments,
+        years: event.years,
+        sections: event.sections,
+        instructions: event.instructions
+      })),
+      rules: [],
+      instructions: [],
+      restrictions: [],
+      announcements: []
+    }
+  };
+}
+
+function buildStructuredTimetable({ rawText, structuredData, events }) {
+  const normalizedText = normalizeTextValue(rawText);
+  const sourceRows = [];
+
+  if (structuredData && Array.isArray(structuredData.pages)) {
+    for (const page of structuredData.pages) {
+      if (!Array.isArray(page.rows)) {
+        continue;
+      }
+
+      for (const row of page.rows) {
+        if (!row?.date) {
+          continue;
+        }
+
+        const subjects = Array.isArray(row.exams)
+          ? row.exams
+              .map((exam) => ({
+                department: normalizeTextValue(exam.department),
+                subjectCode: normalizeTextValue(exam.code),
+                subjectName: normalizeTextValue(exam.subject)
+              }))
+              .filter((subject) => subject.department || subject.subjectCode || subject.subjectName)
+          : [];
+
+        if (subjects.length > 0) {
+          sourceRows.push({
+            date: normalizeTextValue(row.date),
+            subjects
+          });
+        }
+      }
+    }
+  }
+
+  if (!sourceRows.length && events.length) {
+    const grouped = new Map();
+
+    for (const event of events) {
+      const date = normalizeTextValue(event.date);
+      if (!grouped.has(date)) {
+        grouped.set(date, []);
+      }
+
+      grouped.get(date).push({
+        department: event.departments[0] || "",
+        subjectCode: event.subjectCode,
+        subjectName: event.subjectName
+      });
+    }
+
+    for (const [date, subjects] of grouped.entries()) {
+      sourceRows.push({ date, subjects });
+    }
+  }
+
+  const semester = extractSemester(rawText);
+  const sessionRange = normalizeTimeRange(
+    normalizedText.match(/\b\d{1,2}[:.]\d{2}\s*(?:AM|PM|A\.?M\.?|P\.?M\.?)?\s*(?:-|–|to|until|through)\s*\d{1,2}[:.]\d{2}\s*(?:AM|PM|A\.?M\.?|P\.?M\.?)?\b/i)?.[0] || ""
+  );
+
+  return {
+    documentType: "timetable",
+    title: extractTitleCandidate(normalizedText),
+    date: normalizeTextValue(normalizedText.match(/\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b/)?.[0] || ""),
+    summary: sourceRows.length
+      ? `Timetable with ${sourceRows.length} date row${sourceRows.length > 1 ? "s" : ""}.`
+      : "Timetable extracted from document.",
+    intent: {
+      purpose: "Publish exam timetable",
+      mode: "scheduling"
+    },
+    targetAudience: [],
+    semester,
+    examSession: sessionRange,
+    schedule: sourceRows,
+    sections: {
+      schedule: sourceRows,
+      rules: [],
+      instructions: [],
+      restrictions: [],
+      announcements: []
+    }
+  };
+}
+
+function toScheduleEvent(item, index) {
+  const source = item && typeof item === "object" ? item : { subjectName: String(item || "") };
+  const timeValue = normalizeTextValue(source.time);
+  const startFromRange = timeValue.split(/\s*(?:-|–|to)\s*/i)[0] || "";
+  const endFromRange = timeValue.split(/\s*(?:-|–|to)\s*/i)[1] || "";
+
+  return normalizeEvent(
+    {
+      date: source.date || source.examDate || source.day || "",
+      startTime: source.startTime || source.from || startFromRange,
+      endTime: source.endTime || source.to || endFromRange,
+      subjectCode: source.subjectCode || source.code || "",
+      subjectName: source.subjectName || source.subject || source.title || "",
+      instructions: source.instructions || source.action || source.note || "",
+      departments: normalizeStringArray(source.departments || source.department),
+      years: normalizeStringArray(source.years || source.year || source.semester),
+      sections: normalizeStringArray(source.sections || source.section),
+      confidence: Number.isFinite(source.confidence) ? source.confidence : 0.82
+    },
+    index
+  );
+}
+
+function timetableToEvents(structuredTimetable) {
+  const events = [];
+  const scheduleRows = Array.isArray(structuredTimetable?.schedule) ? structuredTimetable.schedule : [];
+
+  for (const row of scheduleRows) {
+    const date = normalizeTextValue(row?.date);
+    const subjects = Array.isArray(row?.subjects) ? row.subjects : [];
+
+    for (const subject of subjects) {
+      events.push(
+        normalizeEvent(
+          {
+            date,
+            subjectCode: normalizeTextValue(subject.subjectCode),
+            subjectName: normalizeTextValue(subject.subjectName),
+            departments: normalizeStringArray(subject.department),
+            confidence: 0.9
+          },
+          events.length
+        )
+      );
+    }
+  }
+
+  return events;
+}
+
 function isLikelyHeadingLine(line) {
   const normalized = normalizeTextValue(line);
 
@@ -168,70 +505,74 @@ function calculateLocalConfidence(event) {
   return Math.min(confidence, 0.95);
 }
 
-function processStructuredPage(page, docType) {
-  const events = [];
-  if (!page.rows || !Array.isArray(page.rows)) return events;
-
-  for (const row of page.rows) {
-    const date = row.date;
-    const time = row.time || "";
-
-    if (!row.exams || !Array.isArray(row.exams)) continue;
-
-    for (const exam of row.exams) {
-      // Parse subject name and code if possible
-      let subjectName = exam.subject || "UNKNOWN";
-      let subjectCode = exam.code || "";
-
-      // Heuristic: If subject contains a 5-6 char alphanumeric code at start/end
-      const codeMatch = subjectName.match(/\b([A-Z]{2,4}\s?\d{2,4}[A-Z]?)\b/);
-      if (codeMatch && !subjectCode) {
-        subjectCode = codeMatch[1];
-        subjectName = subjectName.replace(codeMatch[1], "").trim();
-      }
-
-      const event = {
-        date,
-        startTime: time.split("-")[0]?.trim() || time,
-        endTime: time.split("-")[1]?.trim() || "",
-        subjectCode,
-        subjectName,
-        instructions: exam.department ? `Department: ${exam.department}` : "",
-        departments: exam.department ? [exam.department] : [],
-        years: [],
-        sections: [],
-        confidence: 0.85
-      };
-
-      events.push(normalizeEvent(event, events.length));
-    }
-  }
-  return events;
-}
-
-function extractLocalEvents({ docType, rawText, structuredData }) {
-  // If we have high-fidelity structured data from the Python OCR script, use it!
-  if (structuredData && structuredData.structure_type === "grid_timetable") {
-    const allEvents = [];
-    for (const page of structuredData.pages || []) {
-      allEvents.push(...processStructuredPage(page, docType));
-    }
-    if (allEvents.length > 0) {
-      return buildLocalResult(allEvents);
-    }
-  }
-
-  const normalizedRawText = normalizeTextValue(rawText);
-  return buildLocalResult([]);
-}
-
-function buildLocalResult(events) {
+function buildLocalResult(events, docType) {
   return buildResult({
     provider: "local-hybrid",
     model: "pdfplumber+easyocr+heuristics",
     events,
+    structured: buildStructuredFromEvents(docType, events),
     emptyWarning: "Local hybrid extractor found no structured events"
   });
+}
+
+function processStructuredGridPages({ structuredData, docType }) {
+  if (!structuredData || !Array.isArray(structuredData.pages)) {
+    return [];
+  }
+
+  const events = [];
+  const seen = new Set();
+
+  for (const page of structuredData.pages) {
+    if (!Array.isArray(page.rows)) {
+      continue;
+    }
+
+    for (const row of page.rows) {
+      const date = normalizeTextValue(row.date);
+
+      if (!date || !Array.isArray(row.exams)) {
+        continue;
+      }
+
+      for (const exam of row.exams) {
+        const department = normalizeTextValue(exam.department);
+        const subject = normalizeTextValue(exam.subject);
+        const code = normalizeTextValue(exam.code);
+
+        if (!subject && !code) {
+          continue;
+        }
+
+        const eventKey = `${date}|${department}|${subject}|${code}`;
+        if (seen.has(eventKey)) {
+          continue;
+        }
+
+        seen.add(eventKey);
+
+        const event = normalizeEvent(
+          {
+            date,
+            startTime: normalizeTextValue(row.time),
+            endTime: "",
+            subjectCode: code,
+            subjectName: subject,
+            instructions: "",
+            departments: department ? [department] : [],
+            years: [],
+            sections: [],
+            confidence: 0.92 // High confidence for grid-based extraction
+          },
+          events.length
+        );
+
+        events.push(event);
+      }
+    }
+  }
+
+  return events;
 }
 
 function extractJsonPayload(text) {
@@ -309,69 +650,136 @@ function parseJsonPayload(text) {
 }
 
 function buildExtractionPrompt(docType) {
-  const basePrompt =
-    "You are an academic document extraction engine. Extract structured events and information relevant to students and faculty. Return a single JSON object and nothing else.";
+  const docHint = docType === "exam_timetable" ? "timetable" : docType;
 
-  const typeSpecificInstructions = {
-    exam_timetable: [
-      basePrompt,
-      "For exam schedules: extract exam name, subject code, subject name, date, time, venue/room, department(s), year(s), section(s).",
-      "Each exam should be a separate event."
-    ].join("\n"),
+  if (docHint === "timetable") {
+    return [
+      "You are an intelligent document understanding system for academic ERP platforms.",
+      "The document is a timetable. Preserve the table layout.",
+      "Step A: Detect the table structure where rows are dates and columns are departments/branches.",
+      "Step B: Extract column headers as standardized department names.",
+      "Step C: Map each cell to the correct department and extract subjectCode and subjectName.",
+      "Step D: Extract global context such as semester and exam session timing.",
+      "Step E: Clean OCR noise and keep each subject linked to its correct department.",
+      "Return strict JSON only with this shape:",
+      '{"documentType":"timetable","semester":"","examSession":{"startTime":"","endTime":""},"schedule":[{"date":"","subjects":[{"department":"","subjectCode":"","subjectName":""}]}]}',
+      "No markdown fences. No extra commentary.",
+      "Do not flatten the timetable into random events."
+    ].join("\n");
+  }
 
-    circular: [
-      basePrompt,
-      "For administrative circulars: extract key deadlines, submission details, requirements, departments affected, and any linked actions.",
-      "Important: include DATE, DEADLINE, ACTION REQUIRED, AFFECTED DEPARTMENT/YEAR/SECTION as separate event records.",
-      "Each action item or deadline should be its own event."
-    ].join("\n"),
-
-    notice: [
-      basePrompt,
-      "For notices: extract announcements, important dates, actions required, departments/years/sections affected.",
-      "Each significant notice item should be a separate event."
-    ].join("\n")
-  };
-
-  return (
-    (typeSpecificInstructions[docType] || basePrompt) +
-    "\n" +
-    "Return strict JSON with shape:\n" +
-    '{"events":[{"date":"","startTime":"","endTime":"","subjectCode":"","subjectName":"","instructions":"","departments":[],"years":[],"sections":[],"confidence":0.8}]}' +
-    "\nDo not wrap the JSON in markdown fences, comments, or extra text."
-  );
+  return [
+    "You are an intelligent document understanding system for academic ERP platforms.",
+    `Input hint: ${docHint}.`,
+    "Step 1: Classify documentType as one of timetable, circular, policy, announcement, instruction, mixed.",
+    "Step 2: Infer intent with concise purpose and mode (informing, scheduling, restricting, instructing, or mixed).",
+    "Step 3: Build meaningful sections dynamically. Use only relevant sections from schedule, rules, instructions, restrictions, announcements.",
+    "Step 4: Normalize dates to YYYY-MM-DD when possible and standardize times.",
+    "Step 5: Extract clean entities in targetAudience and schedule entries: departments, years/semester, student types.",
+    "Do not force all content into events. Avoid duplication. Preserve relationships for conditional rules.",
+    "Return strict JSON only with this shape:",
+    '{"documentType":"announcement","title":"","date":"","summary":"","intent":{"purpose":"","mode":"informing"},"targetAudience":[],"sections":{"schedule":[],"rules":[],"instructions":[],"restrictions":[],"announcements":[]}}',
+    "No markdown fences. No extra commentary."
+  ].join("\n");
 }
 
-function buildResult({ provider, model, events, emptyWarning }) {
+function buildResult({ provider, model, events, structured, emptyWarning }) {
+  const resolvedStructured = structured || buildStructuredFromEvents("notice", events);
+  const sectionValues = Object.values(resolvedStructured?.sections || {});
+  const hasStructuredContent =
+    sectionValues.some((section) => Array.isArray(section) && section.length > 0) ||
+    Boolean(normalizeTextValue(resolvedStructured?.summary)) ||
+    Boolean(normalizeTextValue(resolvedStructured?.title));
+
   const confidenceScore =
     events.length > 0
       ? events.reduce((sum, event) => sum + event.confidence, 0) / events.length
+      : hasStructuredContent
+      ? 0.65
       : 0.2;
 
   return {
     provider,
     model,
     confidenceScore,
-    warnings: events.length ? [] : [emptyWarning],
-    events
+    warnings: events.length || hasStructuredContent ? [] : [emptyWarning],
+    events,
+    structured: resolvedStructured
   };
 }
 
-function parseEventsFromModelText(text) {
+function parseModelOutputFromText(text, docType) {
   if (!text) {
     throw new Error("Model returned empty content");
   }
 
   const parsed = parseJsonPayload(text);
+
+  if (parsed && typeof parsed === "object") {
+    const structured = normalizeStructuredDocument(parsed, docType);
+
+    if (structured.documentType === "timetable" || docType === "exam_timetable") {
+      const scheduleRows = Array.isArray(structured.schedule) && structured.schedule.length > 0 ? structured.schedule : Array.isArray(structured.sections?.schedule) ? structured.sections.schedule : [];
+      const timetableStructured = {
+        ...structured,
+        documentType: "timetable",
+        schedule: Array.isArray(scheduleRows) ? scheduleRows : [],
+        sections: {
+          schedule: Array.isArray(scheduleRows) ? scheduleRows : [],
+          rules: [],
+          instructions: [],
+          restrictions: [],
+          announcements: []
+        }
+      };
+
+      return {
+        events: timetableToEvents(timetableStructured),
+        structured: timetableStructured
+      };
+    }
+
+    if (structured.sections) {
+      const scheduleEntries = Array.isArray(structured.sections?.schedule) ? structured.sections.schedule : [];
+      return {
+        events: scheduleEntries.map((item, index) => toScheduleEvent(item, index)),
+        structured
+      };
+    }
+  }
+
   const rawEvents = Array.isArray(parsed) ? parsed : Array.isArray(parsed.events) ? parsed.events : [];
-  return rawEvents.map((item, index) => normalizeEvent(item, index));
+  const events = rawEvents.map((item, index) => normalizeEvent(item, index));
+  return {
+    events,
+    structured: buildStructuredFromEvents(docType, events)
+  };
 }
 
-function extractLocalEvents({ docType, rawText }) {
+function extractLocalEvents({ docType, rawText, structuredData }) {
+  // 1. FIRST: Try structured grid data (highest fidelity)
+  if (structuredData && structuredData.structure_type === "grid_timetable") {
+    const gridEvents = processStructuredGridPages({ structuredData, docType });
+    if (gridEvents.length > 0) {
+      if (docType === "exam_timetable") {
+        return buildResult({
+          provider: "local-hybrid",
+          model: "pdfplumber+easyocr+heuristics",
+          events: gridEvents,
+          structured: buildStructuredTimetable({ rawText, structuredData, events: gridEvents }),
+          emptyWarning: "Local hybrid extractor found no structured events"
+        });
+      }
+
+      return buildLocalResult(gridEvents, docType);
+    }
+  }
+
+  // 2. FALLBACK: Text-based heuristics
   const normalizedRawText = normalizeTextValue(rawText);
 
   if (!normalizedRawText) {
-    return buildLocalResult([]);
+    return buildLocalResult([], docType);
   }
 
   const lines = rawText
@@ -458,7 +866,17 @@ function extractLocalEvents({ docType, rawText }) {
     }
   }
 
-  return buildLocalResult(events);
+  if (docType === "exam_timetable") {
+    return buildResult({
+      provider: "local-hybrid",
+      model: "pdfplumber+easyocr+heuristics",
+      events,
+      structured: buildStructuredTimetable({ rawText, structuredData, events }),
+      emptyWarning: "Local hybrid extractor found no structured events"
+    });
+  }
+
+  return buildLocalResult(events, docType);
 }
 
 async function extractWithOpenAICompatibleFromText({ providerName, baseUrl, apiKey, model, docType, rawText }) {
@@ -497,12 +915,13 @@ async function extractWithOpenAICompatibleFromText({ providerName, baseUrl, apiK
 
     const payload = await response.json();
     const content = payload?.choices?.[0]?.message?.content;
-    const events = parseEventsFromModelText(content);
+    const parsed = parseModelOutputFromText(content, docType);
 
     return buildResult({
       provider: providerName,
       model,
-      events,
+      events: parsed.events,
+      structured: parsed.structured,
       emptyWarning: `${providerName} extracted no events from the text`
     });
   } finally {
@@ -510,56 +929,98 @@ async function extractWithOpenAICompatibleFromText({ providerName, baseUrl, apiK
   }
 }
 
+function getGeminiModelCandidates() {
+  const preferred = normalizeTextValue(env.ai.gemini.model);
+  const fallbacks = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-pro",
+    "gemini-3-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-3.1-pro",
+    "gemini-2.0-flash"
+  ];
+  return [...new Set([preferred, ...fallbacks].filter(Boolean))];
+}
+
+async function callGeminiGenerateContent({ model, body, signal }) {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${env.ai.gemini.apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal,
+      body: JSON.stringify(body)
+    }
+  );
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    const errorMessage = errorBody
+      ? `Gemini request failed for ${model} with status ${response.status}: ${errorBody.slice(0, 500)}`
+      : `Gemini request failed for ${model} with status ${response.status}`;
+    const error = new Error(errorMessage);
+    error.status = response.status;
+    throw error;
+  }
+
+  return response.json();
+}
+
+async function runGeminiWithFallbacks({ body, docType, emptyWarning }) {
+  const modelCandidates = getGeminiModelCandidates();
+  let lastError = null;
+
+  for (const model of modelCandidates) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), env.ai.timeoutMs);
+
+    try {
+      const payload = await callGeminiGenerateContent({ model, body, signal: controller.signal });
+      const text = payload?.candidates?.[0]?.content?.parts?.[0]?.text;
+      const parsed = parseModelOutputFromText(text, docType || "notice");
+
+      return buildResult({
+        provider: "gemini",
+        model,
+        events: parsed.events,
+        structured: parsed.structured,
+        emptyWarning
+      });
+    } catch (error) {
+      lastError = error;
+
+      // Retry with next candidate only when the model is unavailable.
+      if (!/status\s+404|not found|not supported/i.test(error.message)) {
+        throw error;
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  throw lastError || new Error("Gemini request failed for all candidate models");
+}
+
 async function extractWithGeminiFromText({ docType, rawText }) {
   const prompt = buildExtractionPrompt(docType);
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), env.ai.timeoutMs);
-
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${env.ai.gemini.model}:generateContent?key=${env.ai.gemini.apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                { text: prompt + "\n\nDocument content:\n" + rawText }
-              ]
-            }
-          ],
-          generationConfig: {
-            responseMimeType: "application/json",
-            temperature: 0
-          }
-        })
+  return runGeminiWithFallbacks({
+    body: {
+      contents: [
+        {
+          parts: [
+            { text: prompt + "\n\nDocument content:\n" + rawText }
+          ]
+        }
+      ],
+      generationConfig: {
+        temperature: 0
       }
-    );
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      const errorMessage = errorBody
-        ? `Gemini request failed with status ${response.status}: ${errorBody.slice(0, 500)}`
-        : `Gemini request failed with status ${response.status}`;
-      throw new Error(errorMessage);
-    }
-
-    const payload = await response.json();
-    const text = payload?.candidates?.[0]?.content?.parts?.[0]?.text;
-    const events = parseEventsFromModelText(text);
-
-    return buildResult({
-      provider: "gemini",
-      model: env.ai.gemini.model,
-      events,
-      emptyWarning: "Gemini extracted no events from the text"
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
+    },
+    docType,
+    emptyWarning: "Gemini extracted no events from the text"
+  });
 }
 
 async function extractWithGeminiFromPdf({ docType, filePath, pageCount }) {
@@ -568,59 +1029,28 @@ async function extractWithGeminiFromPdf({ docType, filePath, pageCount }) {
 
   const prompt = buildExtractionPrompt(docType);
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), env.ai.timeoutMs);
-
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${env.ai.gemini.model}:generateContent?key=${env.ai.gemini.apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          contents: [
+  return runGeminiWithFallbacks({
+    body: {
+      contents: [
+        {
+          parts: [
+            { text: prompt },
             {
-              parts: [
-                { text: prompt },
-                {
-                  inlineData: {
-                    mimeType: "application/pdf",
-                    data: base64Pdf
-                  }
-                }
-              ]
+              inlineData: {
+                mimeType: "application/pdf",
+                data: base64Pdf
+              }
             }
-          ],
-          generationConfig: {
-            responseMimeType: "application/json",
-            temperature: 0
-          }
-        })
+          ]
+        }
+      ],
+      generationConfig: {
+        temperature: 0
       }
-    );
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      const errorMessage = errorBody
-        ? `Gemini request failed with status ${response.status}: ${errorBody.slice(0, 500)}`
-        : `Gemini request failed with status ${response.status}`;
-      throw new Error(errorMessage);
-    }
-
-    const payload = await response.json();
-    const text = payload?.candidates?.[0]?.content?.parts?.[0]?.text;
-    const events = parseEventsFromModelText(text);
-
-    return buildResult({
-      provider: "gemini",
-      model: env.ai.gemini.model,
-      events,
-      emptyWarning: "Gemini extracted no events from the uploaded PDF"
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
+    },
+    docType,
+    emptyWarning: "Gemini extracted no events from the uploaded PDF"
+  });
 }
 
 async function extractStructuredData({ docType, rawText, filePath, pageCount, structuredData }) {
@@ -727,6 +1157,7 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, st
         provider: "stub",
         model: env.ai.gemini.model,
         confidenceScore: 0.05,
+        structured: docType === "exam_timetable" ? buildStructuredTimetable({ rawText, structuredData, events: [] }) : buildStructuredFromEvents(docType, []),
         warnings: [
           "PDF text extraction failed.",
           `AI extraction attempted: ${providerErrors.join(" | ")}`,
@@ -742,6 +1173,7 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, st
       provider: "stub",
       model: env.ai.gemini.model,
       confidenceScore: 0,
+      structured: docType === "exam_timetable" ? buildStructuredTimetable({ rawText, structuredData, events: [] }) : buildStructuredFromEvents(docType, []),
       warnings: [
         "No text extracted from document parser",
         "This is typically a scanned PDF or image without searchable text.",
@@ -783,6 +1215,7 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, st
     provider: "stub",
     model: env.ai.gemini.model,
     confidenceScore: events.length > 0 ? 0.4 : 0.15,
+    structured: docType === "exam_timetable" ? buildStructuredTimetable({ rawText, structuredData, events }) : buildStructuredFromEvents(docType, events),
     warnings: [
       ...(providerErrors.length ? [`Text provider errors: ${providerErrors.join(" | ")}`] : []),
       ...(events.length > 0 ? [] : [`No ${docType} patterns detected in text`])

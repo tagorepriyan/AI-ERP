@@ -23,12 +23,12 @@ function normalizeApiKey(value) {
 
 function parseProviderOrder(value) {
   const allowed = ["gemini", "groq", "openrouter"];
-  const parsed = (value || "gemini,groq,openrouter")
+  const parsed = (value || "groq,gemini,openrouter")
     .split(",")
     .map((item) => item.trim().toLowerCase())
     .filter((item) => allowed.includes(item));
 
-  return parsed.length ? parsed : allowed;
+  return parsed.length ? parsed : ["groq", "gemini", "openrouter"];
 }
 
 const geminiApiKey = normalizeApiKey(process.env.GEMINI_API_KEY);
@@ -46,7 +46,7 @@ const env = {
     providerOrder: parseProviderOrder(process.env.AI_PROVIDER_ORDER),
     gemini: {
       apiKey: geminiApiKey,
-      model: process.env.GEMINI_MODEL || process.env.AI_MODEL || "gemini-2.0-flash"
+      model: process.env.GEMINI_MODEL || process.env.AI_MODEL || "gemini-2.5-flash"
     },
     groq: {
       apiKey: groqApiKey,
@@ -60,7 +60,7 @@ const env = {
     },
     // Backward-compatible aliases (Gemini defaults)
     apiKey: geminiApiKey,
-    model: process.env.GEMINI_MODEL || process.env.AI_MODEL || "gemini-2.0-flash"
+    model: process.env.GEMINI_MODEL || process.env.AI_MODEL || "gemini-2.5-flash"
   }
 };
 

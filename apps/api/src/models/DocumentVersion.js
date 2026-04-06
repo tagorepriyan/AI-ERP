@@ -17,6 +17,39 @@ const extractedEventSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const structuredSectionSchema = new mongoose.Schema(
+  {
+    schedule: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    rules: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    instructions: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    restrictions: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    announcements: { type: [mongoose.Schema.Types.Mixed], default: [] }
+  },
+  { _id: false }
+);
+
+const extractionStructuredSchema = new mongoose.Schema(
+  {
+    documentType: { type: String, default: "announcement" },
+    title: { type: String, default: "" },
+    date: { type: String, default: "" },
+    summary: { type: String, default: "" },
+    intent: {
+      purpose: { type: String, default: "" },
+      mode: { type: String, default: "" }
+    },
+    targetAudience: [{ type: String }],
+    semester: { type: String, default: "" },
+    examSession: {
+      startTime: { type: String, default: "" },
+      endTime: { type: String, default: "" }
+    },
+    schedule: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    sections: { type: structuredSectionSchema, default: () => ({}) }
+  },
+  { _id: false }
+);
+
 const documentVersionSchema = new mongoose.Schema(
   {
     tenantId: { type: String, required: true, index: true },
@@ -36,7 +69,8 @@ const documentVersionSchema = new mongoose.Schema(
       },
       confidenceScore: { type: Number, default: 0 },
       warnings: [{ type: String }],
-      events: [extractedEventSchema]
+      events: [extractedEventSchema],
+      structured: { type: extractionStructuredSchema, default: () => ({}) }
     }
   },
   {

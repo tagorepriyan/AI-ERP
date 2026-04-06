@@ -3,7 +3,7 @@
   "$id": "https://ai-erp.local/schemas/document-extraction.schema.json",
   "title": "Document Extraction",
   "type": "object",
-  "required": ["provider", "model", "confidenceScore", "events"],
+  "required": ["provider", "model", "confidenceScore", "events", "structured"],
   "properties": {
     "provider": { "type": "string" },
     "model": { "type": "string" },
@@ -41,6 +41,54 @@
         },
         "additionalProperties": false
       }
+    },
+    "structured": {
+      "type": "object",
+      "required": ["documentType", "title", "date", "summary", "targetAudience", "sections"],
+      "properties": {
+        "documentType": { "type": "string" },
+        "title": { "type": "string" },
+        "date": { "type": "string" },
+        "summary": { "type": "string" },
+        "semester": { "type": "string" },
+        "examSession": {
+          "type": "object",
+          "properties": {
+            "startTime": { "type": "string" },
+            "endTime": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "schedule": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "intent": {
+          "type": "object",
+          "properties": {
+            "purpose": { "type": "string" },
+            "mode": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "targetAudience": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "sections": {
+          "type": "object",
+          "properties": {
+            "schedule": { "type": "array", "items": {} },
+            "rules": { "type": "array", "items": {} },
+            "instructions": { "type": "array", "items": {} },
+            "restrictions": { "type": "array", "items": {} },
+            "announcements": { "type": "array", "items": {} }
+          },
+          "required": ["schedule", "rules", "instructions", "restrictions", "announcements"],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

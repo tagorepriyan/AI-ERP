@@ -53,7 +53,8 @@ async function processUploadedDocument({
         status: "completed",
         confidenceScore: extraction.confidenceScore,
         warnings: extraction.warnings,
-        events: extraction.events
+        events: extraction.events,
+        structured: extraction.structured
       }
     });
 
