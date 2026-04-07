@@ -329,8 +329,8 @@ function toScheduleEvent(item, index) {
       startTime: source.startTime || source.from || startFromRange,
       endTime: source.endTime || source.to || endFromRange,
       subjectCode: source.subjectCode || source.code || "",
-      subjectName: source.subjectName || source.subject || source.title || "",
-      instructions: source.instructions || source.action || source.note || "",
+      subjectName: source.subjectName || source.subject || source.title || source.exam || "",
+      instructions: source.instructions || source.action || source.note || source.students || "",
       departments: normalizeStringArray(source.departments || source.department),
       years: normalizeStringArray(source.years || source.year || source.semester),
       sections: normalizeStringArray(source.sections || source.section),
@@ -503,6 +503,41 @@ function calculateLocalConfidence(event) {
   }
 
   return Math.min(confidence, 0.95);
+}
+
+function buildLocalEventFromText(text, docType) {
+  const date = extractDateToken(text);
+  const timeInfo = normalizeTimeRange(extractTimeToken(text));
+  const subjectCode = extractSubjectCodeToken(text);
+  const subjectName = cleanSubjectCandidate(text);
+
+  if (!date && !subjectCode && (!subjectName || subjectName.length < 5)) {
+    return null;
+  }
+
+  const depts = [];
+  const upper = text.toUpperCase();
+  if (upper.includes("CSE") || upper.includes("COMPUTER")) depts.push("CSE");
+  if (upper.includes("ECE") || upper.includes("ELECTRONICS")) depts.push("ECE");
+  if (upper.includes("MECH") || upper.includes("MECHANICAL")) depts.push("MECH");
+  if (upper.includes("CIVIL")) depts.push("CIVIL");
+  if (upper.includes("IT") || upper.includes("INFORMATION TECH")) depts.push("IT");
+  if (upper.includes("EEE") || upper.includes("ELECTRICAL")) depts.push("EEE");
+
+  const event = {
+    date,
+    startTime: timeInfo.startTime,
+    endTime: timeInfo.endTime,
+    subjectCode,
+    subjectName: subjectName || (subjectCode ? "UNKNOWN_SUBJECT" : "UNKNOWN"),
+    instructions: "",
+    departments: docType === "circular" ? depts : [],
+    years: [],
+    sections: []
+  };
+
+  event.confidence = calculateLocalConfidence(event);
+  return event;
 }
 
 function buildLocalResult(events, docType) {
@@ -929,6 +964,54 @@ async function extractWithOpenAICompatibleFromText({ providerName, baseUrl, apiK
   }
 }
 
+async function extractWithOllamaFromText({ docType, rawText, model }) {
+  const prompt = buildExtractionPrompt(docType);
+  const controller = new AbortController();
+  // Allow a very robust timeout (300s/5m) for Ollama since local CPU generation can be extremely slow
+  const timeout = setTimeout(() => controller.abort(), 300000);
+
+  try {
+    const response = await fetch("http://127.0.0.1:11434/api/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: model || "mistral",
+        format: "json",
+        stream: false,
+        options: {
+          temperature: 0.1,
+          num_ctx: 4096 // Ensure Mistral has enough context for larger documents
+        },
+        prompt: `${prompt}\n\nDocument content:\n${rawText}\n\nReturn only strict JSON.`
+      })
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Ollama request failed with status ${response.status}: ${errorBody.slice(0, 500)}`);
+    }
+
+    const payload = await response.json();
+    const content = payload?.response;
+    
+    // Some local models might wrap JSON in markdown blocks despite our instructions
+    const parsed = parseModelOutputFromText(content, docType);
+
+    return buildResult({
+      provider: "ollama-local",
+      model: model || "mistral",
+      events: parsed.events,
+      structured: parsed.structured,
+      emptyWarning: `Ollama extracted no events from the text`
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function getGeminiModelCandidates() {
   const preferred = normalizeTextValue(env.ai.gemini.model);
   const fallbacks = [
@@ -1053,23 +1136,23 @@ async function extractWithGeminiFromPdf({ docType, filePath, pageCount }) {
   });
 }
 
-async function extractStructuredData({ docType, rawText, filePath, pageCount, structuredData }) {
+async function extractStructuredData({ docType, rawText, filePath, pageCount, provider, structuredData }) {
   const providerErrors = [];
-
-  const localResult = extractLocalEvents({ docType, rawText, structuredData });
-  if (localResult.events.length > 0) {
-    return localResult;
-  }
 
   const textProviders = [
     {
+      name: "ollama",
+      enabled: provider === "ollama",
+      execute: () => extractWithOllamaFromText({ docType, rawText, model: "mistral" })
+    },
+    {
       name: "gemini",
-      enabled: Boolean(env.ai.gemini.apiKey),
+      enabled: (provider === "gemini" || !provider) && Boolean(env.ai.gemini.apiKey),
       execute: () => extractWithGeminiFromText({ docType, rawText })
     },
     {
       name: "groq",
-      enabled: Boolean(env.ai.groq.apiKey),
+      enabled: (provider === "gemini" || !provider) && Boolean(env.ai.groq.apiKey),
       execute: () =>
         extractWithOpenAICompatibleFromText({
           providerName: "groq",
@@ -1082,7 +1165,7 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, st
     },
     {
       name: "openrouter",
-      enabled: Boolean(env.ai.openrouter.apiKey),
+      enabled: (provider === "gemini" || !provider) && Boolean(env.ai.openrouter.apiKey),
       execute: async () => {
         const modelCandidates = [
           env.ai.openrouter.model,
@@ -1120,11 +1203,28 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, st
   if (rawText && rawText.trim().length > 0 && textProviders.length > 0) {
     for (const provider of textProviders) {
       try {
-        return await provider.execute();
+        const result = await provider.execute();
+        if (result?.events?.length > 0 || Object.keys(result?.structured?.sections || {}).some(k => result.structured.sections[k]?.length > 0)) {
+          return result;
+        }
+        providerErrors.push(`${provider.name}: No events extracted`);
       } catch (error) {
         providerErrors.push(`${provider.name}: ${error.message}`);
       }
     }
+  }
+
+  // AI-first logic failed or returned empty results -> fallback to local hybrid heuristics
+  const localResult = extractLocalEvents({ docType, rawText, structuredData });
+  if (localResult.events.length > 0) {
+    return {
+       ...localResult,
+       warnings: [
+         ...(localResult.warnings || []), 
+         "AI extraction failed or returned no events. Using heuristic fallback.",
+         `Errors from AI providers during attempt: ${providerErrors.join(" | ")}`
+       ]
+    };
   }
 
   // Fallback: If no text and we have PDF file, try AI-powered PDF extraction
@@ -1132,7 +1232,7 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, st
     const pdfProviders = [
       {
         name: "gemini",
-        enabled: Boolean(env.ai.gemini.apiKey),
+        enabled: (provider === "gemini" || !provider) && Boolean(env.ai.gemini.apiKey),
         execute: () => extractWithGeminiFromPdf({ docType, filePath, pageCount })
       }
       // Note: Groq/OpenRouter cannot process PDF binary directly

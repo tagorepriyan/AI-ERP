@@ -2,8 +2,11 @@ const crypto = require("crypto");
 
 const Document = require("../../models/Document");
 const DocumentVersion = require("../../models/DocumentVersion");
+const NotificationLog = require("../../models/NotificationLog");
 const { parsePdf } = require("../parser/pdfParser");
 const { extractStructuredData } = require("../extraction/extractor");
+const { deriveRecipients } = require("../routing/routingEngine");
+const { updateJob } = require("../jobs/jobStore");
 
 function sha1(text) {
   return crypto.createHash("sha1").update(text).digest("hex");
@@ -14,8 +17,13 @@ async function processUploadedDocument({
   title,
   docType,
   file,
-  uploadedBy = "admin"
+  provider,
+  uploadedBy = "admin",
+  jobId = null
 }) {
+  const emit = (stage, label) => { if (jobId) updateJob(jobId, stage, label); };
+
+  emit("parse", "Parsing PDF structure...");
   const parserResult = await parsePdf(file.path);
   const checksum = sha1(`${file.originalname}:${file.size}:${parserResult.rawText.slice(0, 2000)}`);
 
@@ -31,14 +39,20 @@ async function processUploadedDocument({
   });
 
   try {
+    emit("ocr", "Extracting text content...");
+    // (OCR already done inside parsePdf — this is a stage label update)
+
+    emit("ai", `Sending to AI model (${provider === "ollama" ? "Local Mistral" : "Cloud"})...`);
     const extraction = await extractStructuredData({
       docType,
       rawText: parserResult.rawText,
       filePath: file.path,
       pageCount: parserResult.pageCount,
-      structuredData: parserResult.structuredData // Pass the grid-based data
+      provider,
+      structuredData: parserResult.structuredData
     });
 
+    emit("routing", "Running intelligent routing engine...");
     const version = await DocumentVersion.create({
       tenantId,
       documentId: document._id,
@@ -58,13 +72,49 @@ async function processUploadedDocument({
       }
     });
 
-    document.status = extraction.confidenceScore >= 0.7 ? "published" : "review_required";
+    // Always hold at pending_approval — admin must approve before delivery
+    document.status = "pending_approval";
     await document.save();
+
+    // ── Intelligent Routing ──────────────────────────────────────────────────
+    let routingResult = { recipients: [], conditionLabels: [], matchQuery: {} };
+    try {
+      routingResult = await deriveRecipients(tenantId, extraction);
+
+      if (routingResult.recipients.length > 0) {
+        const logDocs = routingResult.recipients.map((user) => ({
+          tenantId,
+          documentId: document._id,
+          documentTitle: document.title,
+          documentType: docType,
+          userId: user._id?.toString() || user.registrationNo || user.userId,
+          userFullName: user.fullName,
+          userRole: user.role || "student",
+          userDepartment: user.department || "",
+          userYear: user.year || "",
+          matchedConditions: routingResult.conditionLabels,
+          channels: {
+            inApp: { sent: false },
+            email: { sent: false },
+            sms: { sent: false }
+          },
+          status: "pending" // Held until admin approves
+        }));
+
+        await NotificationLog.insertMany(logDocs, { ordered: false }).catch(() => {});
+      }
+    } catch (routeErr) {
+      console.error("[routing] Failed to derive recipients:", routeErr.message);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    emit("saving", "Saving results to database...");
 
     return {
       document,
       version,
-      nextAction: document.status === "published" ? "ready_for_notifications" : "admin_review_required"
+      routingResult,
+      nextAction: "pending_admin_approval"
     };
   } catch (error) {
     document.status = "failed";

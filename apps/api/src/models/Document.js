@@ -15,20 +15,24 @@ const documentSchema = new mongoose.Schema(
     checksum: { type: String, index: true },
     status: {
       type: String,
-      enum: ["uploaded", "processing", "review_required", "published", "failed"],
+      enum: ["uploaded", "processing", "pending_approval", "review_required", "published", "rejected", "failed"],
       default: "uploaded",
       index: true
     },
     latestVersion: { type: Number, default: 1 },
     uploadedBy: { type: String, default: "system" },
+    // Admin approval tracking
+    approvedBy: { type: String, default: "" },
+    approvedAt: { type: Date, default: null },
+    rejectedBy: { type: String, default: "" },
+    rejectedAt: { type: Date, default: null },
+    rejectionReason: { type: String, default: "" },
     metadata: {
       campus: { type: String, default: "" },
       academicYear: { type: String, default: "" }
     }
   },
-  {
-    timestamps: true
-  }
+  { timestamps: true }
 );
 
 documentSchema.index({ tenantId: 1, docType: 1, createdAt: -1 });

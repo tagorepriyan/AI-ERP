@@ -1,752 +1,769 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import LoginPage from "./LoginPage";
 
-const API_BASE =
-  import.meta.env.VITE_API_BASE_URL || `${window.location.protocol}//${window.location.hostname}:4000`;
+const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
 
-function toDate(value) {
-  if (!value) return "-";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleDateString();
+function fmtDate(v) {
+  if (!v) return "-";
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? v : d.toLocaleDateString();
 }
 
-const MAX_FILE_MB = 20;
+function fmtTime(sec) {
+  if (!sec || sec <= 0) return "< 1s";
+  if (sec < 60) return `~${Math.round(sec)}s`;
+  return `~${Math.round(sec / 60)}m`;
+}
 
-function App() {
-  const [tenantId, setTenantId] = useState("default-campus");
-  const [title, setTitle] = useState("");
-  const [docType, setDocType] = useState("exam_timetable");
-  const [file, setFile] = useState(null);
-  const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState("");
-  const [documents, setDocuments] = useState([]);
-  const [selectedDoc, setSelectedDoc] = useState(null);
-  const [loadingDocs, setLoadingDocs] = useState(false);
-  const [detailTab, setDetailTab] = useState(() => localStorage.getItem("ai_erp_detail_tab") || "summary");
-  const [wizardStep, setWizardStep] = useState(1);
-  const [processLine, setProcessLine] = useState("Idle");
-  const [processMeta, setProcessMeta] = useState("Waiting to process");
-  const [docQuery, setDocQuery] = useState(() => localStorage.getItem("ai_erp_doc_query") || "");
-  const [docStatusFilter, setDocStatusFilter] = useState(() => localStorage.getItem("ai_erp_doc_status") || "");
-  const [docTypeFilter, setDocTypeFilter] = useState(() => localStorage.getItem("ai_erp_doc_type") || "");
-  const [eventExpanded, setEventExpanded] = useState({});
-  const [filterDept, setFilterDept] = useState(() => localStorage.getItem("ai_erp_filter_dept") || "");
-  const [filterYear, setFilterYear] = useState(() => localStorage.getItem("ai_erp_filter_year") || "");
-  const [filterSection, setFilterSection] = useState(() => localStorage.getItem("ai_erp_filter_section") || "");
-  const [checkingAi, setCheckingAi] = useState(false);
-  const [aiHealth, setAiHealth] = useState(null);
-  const [showOcrText, setShowOcrText] = useState(false);
-  const [uploadNote, setUploadNote] = useState("");
-  const [wizardError, setWizardError] = useState("");
-  const [lastSelectedDocId, setLastSelectedDocId] = useState(() => localStorage.getItem("ai_erp_selected_doc") || "");
-
+export default function App() {
+  const [authed, setAuthed] = useState(() => sessionStorage.getItem("notify_auth") === "1");
+  const [view, setView] = useState("dashboard");
+  const [tenantId] = useState("default-campus");
   const headers = useMemo(() => ({ "x-tenant-id": tenantId }), [tenantId]);
+  const jsonHeaders = useMemo(() => ({ ...headers, "Content-Type": "application/json" }), [headers]);
+
+  // ── Data state ──────────────────────────────────────────────────────────────
+  const [docs, setDocs] = useState([]);
+  const [students, setStudents] = useState([]);
+  const [selectedDocId, setSelectedDocId] = useState(null);
+  const [selectedDoc, setSelectedDoc] = useState(null);
+  const [recipients, setRecipients] = useState([]);
+  const [detailTab, setDetailTab] = useState("intelligence");
+  const [error, setError] = useState("");
+
+  // Upload wizard
+  const [showUpload, setShowUpload] = useState(false);
+  const [wizStep, setWizStep] = useState(1);
+  const [uTitle, setUTitle] = useState("");
+  const [uDocType, setUDocType] = useState("circular");
+  const [uProvider, setUProvider] = useState("ollama");
+  const [uFile, setUFile] = useState(null);
+  const [jobId, setJobId] = useState(null);
+  const [jobProgress, setJobProgress] = useState(null);
+
+  // Approval modal
+  const [showApproval, setShowApproval] = useState(null);
+  const [rejectReason, setRejectReason] = useState("");
+
+  // AI status
+  const [aiStatus, setAiStatus] = useState("checking");
+
+  // System stats
+  const [sysStats, setSysStats] = useState(null);
+
+  // Notification history
+  const [sentHistory, setSentHistory] = useState([]);
+  const [notiTab, setNotiTab] = useState("queue");
+
+  // CSV import
+  const csvRef = useRef();
+
+  // ── Fetchers ────────────────────────────────────────────────────────────────
+  const fetchDocs = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/documents`, { headers });
+      const d = await r.json();
+      setDocs(d.items || []);
+    } catch (e) { console.error(e); }
+  }, [headers]);
+
+  const fetchStudents = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/students`, { headers });
+      const d = await r.json();
+      setStudents(d.students || []);
+    } catch (e) { console.error(e); }
+  }, [headers]);
+
+  const fetchDocDetail = useCallback(async (id) => {
+    try {
+      const r = await fetch(`${API}/documents/${id}`, { headers });
+      const d = await r.json();
+      setSelectedDoc(d);
+    } catch (e) { console.error(e); }
+  }, [headers]);
+
+  const fetchRecipients = useCallback(async (id) => {
+    try {
+      const r = await fetch(`${API}/notifications/document/${id}`, { headers });
+      const d = await r.json();
+      setRecipients(d.notifications || []);
+    } catch (e) { console.error(e); }
+  }, [headers]);
+
+  const fetchSentHistory = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/notifications?status=delivered`, { headers });
+      const d = await r.json();
+      setSentHistory(d.notifications || []);
+    } catch (e) { console.error(e); }
+  }, [headers]);
+
+  const checkAi = useCallback(async () => {
+    setAiStatus("checking");
+    try {
+      const r = await fetch("http://127.0.0.1:11434/api/tags");
+      if (r.ok) setAiStatus("online");
+      else setAiStatus("offline");
+    } catch { setAiStatus("offline"); }
+  }, []);
+
+  const fetchSysStats = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/system`, { headers });
+      if (r.ok) setSysStats(await r.json());
+    } catch { /* silent */ }
+  }, [headers]);
+
+  useEffect(() => {
+    if (!authed) return;
+    fetchDocs(); fetchStudents(); checkAi(); fetchSysStats();
+    const i1 = setInterval(checkAi, 30000);
+    const i2 = setInterval(fetchSysStats, 2500);
+    return () => { clearInterval(i1); clearInterval(i2); };
+  }, [authed]);
+
+  // ── Derived data ────────────────────────────────────────────────────────────
+  const pendingDocs = useMemo(() => docs.filter(d => d.status === "pending_approval"), [docs]);
+  const publishedDocs = useMemo(() => docs.filter(d => d.status === "published"), [docs]);
   const extraction = selectedDoc?.latestVersion?.extraction || {};
+  const structured = extraction?.structured || {};
   const events = extraction?.events || [];
-  const isTimetableDoc = selectedDoc?.document?.docType === "exam_timetable" || extraction?.structured?.documentType === "timetable";
 
-  const filteredDocuments = useMemo(() => {
-    return documents.filter((doc) => {
-      const matchQuery = doc.title?.toLowerCase().includes(docQuery.toLowerCase());
-      const matchStatus = docStatusFilter ? doc.status === docStatusFilter : true;
-      const matchDocType = docTypeFilter ? doc.docType === docTypeFilter : true;
-      return matchQuery && matchStatus && matchDocType;
-    });
-  }, [documents, docQuery, docStatusFilter, docTypeFilter]);
+  // ── Actions ─────────────────────────────────────────────────────────────────
+  async function handleUpload() {
+    if (!uFile) return;
+    const fd = new FormData();
+    fd.append("file", uFile);
+    fd.append("title", uTitle || uFile.name);
+    fd.append("docType", uDocType);
+    fd.append("provider", uProvider);
 
-  const quickStats = useMemo(() => {
-    return {
-      total: documents.length,
-      published: documents.filter((doc) => doc.status === "published").length,
-      review: documents.filter((doc) => doc.status === "review_required").length
+    // Close the modal immediately so the user is NOT blocked
+    setShowUpload(false);
+    setWizStep(1);
+    setJobProgress({ pct: 5, label: "Uploading document...", stage: "upload" });
+
+    try {
+      const r = await fetch(`${API}/documents/upload`, { method: "POST", headers, body: fd });
+      const d = await r.json();
+      if (d.jobId) {
+        setJobId(d.jobId);
+      } else {
+        setJobProgress({ pct: 100, label: "Done", stage: "done" });
+        fetchDocs();
+      }
+    } catch (e) {
+      setJobProgress({ pct: 0, label: `Error: ${e.message}`, stage: "error" });
+    }
+  }
+
+  // Poll job progress
+  useEffect(() => {
+    if (!jobId) return;
+    let active = true;
+    const poll = async () => {
+      try {
+        const r = await fetch(`${API}/jobs/${jobId}`, { headers });
+        if (!r.ok) return;
+        const job = await r.json();
+        if (active) setJobProgress(job);
+        if (job.stage === "done" || job.stage === "error") {
+          fetchDocs();
+          return;
+        }
+        if (active) setTimeout(poll, 800);
+      } catch { if (active) setTimeout(poll, 2000); }
     };
-  }, [documents]);
+    poll();
+    return () => { active = false; };
+  }, [jobId]);
 
-  const availableFilters = useMemo(() => {
-    if (!events.length) return { departments: [], years: [], sections: [] };
-    return {
-      departments: [...new Set(events.flatMap((e) => e.departments || []))].sort(),
-      years: [...new Set(events.flatMap((e) => e.years || []))].sort(),
-      sections: [...new Set(events.flatMap((e) => e.sections || []))].sort()
-    };
-  }, [events]);
-
-  const filteredEvents = useMemo(() => {
-    return events.filter((event) => {
-      if (filterDept && !(event.departments || []).includes(filterDept)) return false;
-      if (filterYear && !(event.years || []).includes(filterYear)) return false;
-      if (filterSection && !(event.sections || []).includes(filterSection)) return false;
-      return true;
-    });
-  }, [events, filterDept, filterYear, filterSection]);
-
-  const sortedByDeadline = useMemo(() => {
-    return [...filteredEvents].sort((a, b) => {
-      if (!a.date && !b.date) return 0;
-      if (!a.date) return 1;
-      if (!b.date) return -1;
-      return new Date(a.date) - new Date(b.date);
-    });
-  }, [filteredEvents]);
-
-  const confidenceScore = useMemo(() => {
-    if (!events.length) return 0;
-    const scores = events.map((event) => event.confidence || 0);
-    return scores.reduce((sum, current) => sum + current, 0) / scores.length;
-  }, [events]);
-
-  const confidenceClass =
-    confidenceScore >= 0.85 ? "conf-good" : confidenceScore >= 0.65 ? "conf-medium" : "conf-low";
-
-  const fallbackTriggered =
-    extraction?.stub === true || extraction?.fallback === true || String(extraction?.provider || "").toLowerCase().includes("stub");
-
-  const timetableRows = useMemo(() => {
-    if (!isTimetableDoc) return [];
-    if (Array.isArray(extraction?.structured?.schedule)) {
-      return extraction.structured.schedule;
-    }
-
-    const groupedByDate = {};
-    for (const event of filteredEvents) {
-      const key = event.date || "TBA";
-      if (!groupedByDate[key]) groupedByDate[key] = [];
-      groupedByDate[key].push(event);
-    }
-
-    return Object.entries(groupedByDate).map(([date, entries]) => ({ date, entries }));
-  }, [isTimetableDoc, extraction, filteredEvents]);
-
-  useEffect(() => {
-    localStorage.setItem("ai_erp_detail_tab", detailTab);
-  }, [detailTab]);
-
-  useEffect(() => {
-    localStorage.setItem("ai_erp_doc_query", docQuery);
-    localStorage.setItem("ai_erp_doc_status", docStatusFilter);
-    localStorage.setItem("ai_erp_doc_type", docTypeFilter);
-  }, [docQuery, docStatusFilter, docTypeFilter]);
-
-  useEffect(() => {
-    localStorage.setItem("ai_erp_filter_dept", filterDept);
-    localStorage.setItem("ai_erp_filter_year", filterYear);
-    localStorage.setItem("ai_erp_filter_section", filterSection);
-  }, [filterDept, filterYear, filterSection]);
-
-  useEffect(() => {
-    if (lastSelectedDocId) {
-      localStorage.setItem("ai_erp_selected_doc", lastSelectedDocId);
-    }
-  }, [lastSelectedDocId]);
-
-  async function fetchDocuments() {
-    setLoadingDocs(true);
-    setError("");
+  async function approveDoc(docId) {
     try {
-      const response = await fetch(`${API_BASE}/documents`, { headers });
-      if (!response.ok) throw new Error("Failed to load documents");
-      const payload = await response.json();
-      setDocuments(payload.items || []);
-    } catch (fetchError) {
-      setError(fetchError.message || "Unable to fetch documents");
-    } finally {
-      setLoadingDocs(false);
-    }
+      await fetch(`${API}/documents/${docId}/approve`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ approvedBy: "admin" }) });
+      setShowApproval(null);
+      fetchDocs();
+      if (selectedDocId === docId) fetchDocDetail(docId);
+    } catch (e) { setError(e.message); }
   }
 
-  async function fetchDocumentById(id) {
-    setError("");
-    setShowOcrText(false);
-    setEventExpanded({});
+  async function rejectDoc(docId) {
     try {
-      const response = await fetch(`${API_BASE}/documents/${id}`, { headers });
-      if (!response.ok) throw new Error("Failed to load document details");
-      const payload = await response.json();
-      setSelectedDoc(payload);
-      setLastSelectedDocId(id);
-    } catch (fetchError) {
-      setError(fetchError.message || "Unable to fetch document detail");
-    }
+      await fetch(`${API}/documents/${docId}/reject`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ reason: rejectReason || "Rejected by admin", rejectedBy: "admin" }) });
+      setShowApproval(null);
+      setRejectReason("");
+      fetchDocs();
+      if (selectedDocId === docId) fetchDocDetail(docId);
+    } catch (e) { setError(e.message); }
   }
 
-  async function checkAiProviders() {
-    setCheckingAi(true);
-    setError("");
+  async function seedStudents() {
     try {
-      const response = await fetch(`${API_BASE}/health/ai`, { headers });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(payload?.error?.message || "Unable to check AI providers");
-      }
-      setAiHealth(payload);
-    } catch (healthError) {
-      setError(healthError.message || "Unable to check AI providers");
-    } finally {
-      setCheckingAi(false);
-    }
+      await fetch(`${API}/students/seed`, { method: "POST", headers });
+      fetchStudents();
+    } catch (e) { setError(e.message); }
   }
 
-  function downloadDebugJson() {
-    if (!selectedDoc) return;
-    const blob = new Blob([JSON.stringify(selectedDoc.latestVersion?.extraction || {}, null, 2)], {
-      type: "application/json"
-    });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${selectedDoc.document?.title || "document"}-debug.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-  }
-
-  async function runFallbackProvider() {
-    if (!selectedDoc?.document?.id) return;
-    setError("");
+  async function importCsv(csvText) {
     try {
-      const response = await fetch(`${API_BASE}/documents/${selectedDoc.document.id}/fallback`, {
-        method: "POST",
-        headers
-      });
-      if (!response.ok) {
-        throw new Error("Fallback provider endpoint is not available in current API routes");
-      }
-      await fetchDocumentById(selectedDoc.document.id);
-    } catch (fallbackError) {
-      setError(fallbackError.message || "Unable to run fallback provider");
-    }
+      const r = await fetch(`${API}/students/import-csv`, { method: "POST", headers: { ...headers, "Content-Type": "text/csv" }, body: csvText });
+      const d = await r.json();
+      alert(d.message || "Import complete");
+      fetchStudents();
+    } catch (e) { setError(e.message); }
   }
 
-  function toggleEvent(index) {
-    setEventExpanded((current) => ({
-      ...current,
-      [index]: !current[index]
-    }));
+  function selectDoc(id) {
+    setSelectedDocId(id);
+    fetchDocDetail(id);
+    fetchRecipients(id);
+    setDetailTab("intelligence");
+    if (view !== "documents") setView("documents");
   }
 
-  async function onUpload(event) {
-    event.preventDefault();
+  if (!authed) return <LoginPage onLogin={() => setAuthed(true)} />;
 
-    if (!title.trim()) {
-      setWizardError("Step 1 validation: title is required.");
-      setWizardStep(1);
-      return;
-    }
+  // ── Nav items ───────────────────────────────────────────────────────────────
+  const navItems = [
+    { id: "dashboard", icon: "📊", label: "Dashboard" },
+    { id: "documents", icon: "📄", label: "Documents" },
+    { id: "students", icon: "👥", label: "Students" },
+    { id: "notifications", icon: "🔔", label: "Notifications", badge: pendingDocs.length || null },
+    { id: "settings", icon: "⚙️", label: "Settings" },
+  ];
 
-    if (!file) {
-      setWizardError("Step 2 validation: select a PDF file before uploading.");
-      setWizardStep(2);
-      return;
-    }
-
-    if (file.type !== "application/pdf") {
-      setWizardError("Step 2 validation: only PDF files are allowed.");
-      setWizardStep(2);
-      return;
-    }
-
-    if (file.size > MAX_FILE_MB * 1024 * 1024) {
-      setWizardError(`Step 2 validation: file exceeds ${MAX_FILE_MB}MB limit.`);
-      setWizardStep(2);
-      return;
-    }
-
-    setUploading(true);
-    setError("");
-    setWizardError("");
-    setUploadNote("");
-    setProcessLine("Preparing request");
-    setProcessMeta("Provider: from pipeline routing | Model: assigned by backend");
-
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("title", title || file.name);
-    formData.append("docType", docType);
-
-    try {
-      setProcessLine("Uploading document");
-
-      const response = await fetch(`${API_BASE}/documents/upload`, {
-        method: "POST",
-        headers,
-        body: formData
-      });
-      const payload = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(payload?.error?.message || "Upload failed");
-      }
-
-      setProcessLine("Extraction completed");
-      setProcessMeta(
-        `Events: ${payload?.extractionSummary?.eventCount ?? 0} | Confidence: ${Math.round((payload?.extractionSummary?.confidenceScore || 0) * 100)}%`
-      );
-      setUploadNote(`Success. Next action: ${payload?.document?.nextAction || "inspect document"}`);
-
-      setTitle("");
-      setFile(null);
-      await fetchDocuments();
-      if (payload?.document?.id) {
-        await fetchDocumentById(payload.document.id);
-      }
-      setWizardStep(3);
-      setProcessLine("Completed");
-    } catch (uploadError) {
-      setError(uploadError.message || "Upload failed");
-      setProcessLine("Failed");
-      setProcessMeta("See error message below");
-    } finally {
-      setUploading(false);
-    }
-  }
-
-  function onContinueToFile() {
-    if (!title.trim()) {
-      setWizardError("Step 1 validation: title is required.");
-      return;
-    }
-    setWizardError("");
-    setWizardStep(2);
-  }
-
-  function onDocListKeyDown(event, index, id) {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      fetchDocumentById(id);
-      return;
-    }
-
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
-      return;
-    }
-
-    event.preventDefault();
-    if (!filteredDocuments.length) return;
-
-    const nextIndex = event.key === "ArrowDown"
-      ? Math.min(index + 1, filteredDocuments.length - 1)
-      : Math.max(index - 1, 0);
-
-    const nextDoc = filteredDocuments[nextIndex];
-    if (nextDoc) {
-      fetchDocumentById(nextDoc.id);
-    }
-  }
-
-  useEffect(() => {
-    fetchDocuments();
-  }, [tenantId]);
-
-  useEffect(() => {
-    if (!lastSelectedDocId || selectedDoc?.document?.id === lastSelectedDocId) {
-      return;
-    }
-
-    const existsInList = documents.some((doc) => String(doc.id) === String(lastSelectedDocId));
-    if (existsInList) {
-      fetchDocumentById(lastSelectedDocId);
-    }
-  }, [documents, lastSelectedDocId]);
-
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="app-shell">
-      <header className="hero hero-grid">
-        <div className="hero-left">
-          <h1>AI-ERP Document Console</h1>
-          <p>Smart ingestion pipeline for campus timetables, circulars, and notices with extracted and personalized output.</p>
-        </div>
-        <div className="hero-right">
-          <div className="quick-stat">
-            <span>Total docs</span>
-            <strong>{quickStats.total}</strong>
-          </div>
-          <div className="quick-stat">
-            <span>Published</span>
-            <strong>{quickStats.published}</strong>
-          </div>
-          <div className="quick-stat">
-            <span>Review required</span>
-            <strong>{quickStats.review}</strong>
-          </div>
-        </div>
-      </header>
+      {/* ── Nav Rail ──────────────────────────────────────────── */}
+      <nav className="nav-rail">
+        <div className="nav-logo">🔔</div>
+        {navItems.map(n => (
+          <button key={n.id} className={`nav-item ${view === n.id ? "active" : ""}`} onClick={() => setView(n.id)} title={n.label}>
+            {n.icon}
+            {n.badge ? <span className="nav-badge">{n.badge}</span> : null}
+          </button>
+        ))}
+        <div className="nav-spacer" />
 
-      <section className="card controls">
-        <label>
-          Tenant ID
-          <input value={tenantId} onChange={(event) => setTenantId(event.target.value)} />
-        </label>
-        <button className="secondary" onClick={checkAiProviders} disabled={checkingAi}>
-          {checkingAi ? "Checking AI..." : "Check AI Health"}
-        </button>
-        {aiHealth?.providers?.length > 0 && (
-          <div className="ai-health-pill-list">
-            {aiHealth.providers.map((provider) => (
-              <span key={provider.provider} className={`ai-pill ${provider.active ? "ok" : "down"}`}>
-                {provider.provider}: {provider.status}
-              </span>
-            ))}
+        {/* Mini system monitor — hover to expand */}
+        {sysStats && (
+          <div className="nav-sysmon">
+            <div className="nav-sysmon-dots">
+              <div className="sysmon-dot" style={{ background: sysStats.cpu.load > 80 ? 'var(--danger)' : sysStats.cpu.load > 50 ? 'var(--warning)' : 'var(--success)' }} />
+              <div className="sysmon-dot" style={{ background: sysStats.ram.usagePct > 85 ? 'var(--danger)' : sysStats.ram.usagePct > 60 ? 'var(--warning)' : 'var(--primary)' }} />
+              <div className="sysmon-dot" style={{ background: (sysStats.gpu.utilizationPct ?? 0) > 80 ? 'var(--danger)' : 'var(--primary)' }} />
+            </div>
+            <span className="nav-hw-label">SYS</span>
+
+            {/* Popout panel on hover */}
+            <div className="sysmon-popout">
+              <div className="sysmon-popout-title">🖥️ System Monitor</div>
+
+              <div className="sysmon-section">
+                <div className="sysmon-row">
+                  <span className="sysmon-name">⚡ CPU</span>
+                  <span className="sysmon-val">{sysStats.cpu.load}%</span>
+                </div>
+                <div className="sysmon-bar"><div className="sysmon-bar-fill" style={{ width: `${sysStats.cpu.load}%`, background: sysStats.cpu.load > 80 ? 'var(--danger)' : sysStats.cpu.load > 50 ? 'var(--warning)' : 'var(--success)' }} /></div>
+                <div className="sysmon-sub">{sysStats.cpu.cores} cores{sysStats.cpu.tempC != null ? ` · ${sysStats.cpu.tempC}°C` : ''}</div>
+              </div>
+
+              <div className="sysmon-section">
+                <div className="sysmon-row">
+                  <span className="sysmon-name">🧠 RAM</span>
+                  <span className="sysmon-val">{sysStats.ram.usedGB} / {sysStats.ram.totalGB} GB</span>
+                </div>
+                <div className="sysmon-bar"><div className="sysmon-bar-fill" style={{ width: `${sysStats.ram.usagePct}%`, background: sysStats.ram.usagePct > 85 ? 'var(--danger)' : sysStats.ram.usagePct > 60 ? 'var(--warning)' : 'var(--primary)' }} /></div>
+                <div className="sysmon-sub">{sysStats.ram.freeGB} GB free · {sysStats.ram.usagePct}% used</div>
+              </div>
+
+              <div className="sysmon-section">
+                <div className="sysmon-row">
+                  <span className="sysmon-name">🎮 GPU</span>
+                  <span className="sysmon-val">{sysStats.gpu.utilizationPct != null ? `${sysStats.gpu.utilizationPct}%` : '-'}</span>
+                </div>
+                {sysStats.gpu.utilizationPct != null && (
+                  <div className="sysmon-bar"><div className="sysmon-bar-fill" style={{ width: `${sysStats.gpu.utilizationPct}%`, background: 'var(--primary)' }} /></div>
+                )}
+                <div className="sysmon-sub">{sysStats.gpu.model}</div>
+                {sysStats.gpu.vramTotalMB > 0 && <div className="sysmon-sub">VRAM: {sysStats.gpu.vramTotalMB} MB{sysStats.gpu.vramUsedMB != null ? ` (${sysStats.gpu.vramUsedMB} used)` : ''}</div>}
+                {sysStats.gpu.clockMHz != null && <div className="sysmon-sub">Clock: {sysStats.gpu.clockMHz} MHz{sysStats.gpu.memClockMHz ? ` · Mem: ${sysStats.gpu.memClockMHz} MHz` : ''}</div>}
+                {sysStats.gpu.tempC != null && <div className="sysmon-sub">🌡️ {sysStats.gpu.tempC}°C</div>}
+              </div>
+            </div>
           </div>
         )}
-      </section>
 
-      <section className="grid">
-        <form className="card" onSubmit={onUpload}>
-          <h2>Upload Wizard</h2>
-          <div className="wizard-steps">
-            <span className={wizardStep === 1 ? "active" : ""}>Step 1: Document info</span>
-            <span className={wizardStep === 2 ? "active" : ""}>Step 2: File</span>
-            <span className={wizardStep === 3 ? "active" : ""}>Step 3: Processing result</span>
+        <div className="nav-ai-status" title={`Local AI: ${aiStatus}`}>
+          <div className={`ai-dot ${aiStatus}`} />
+          <span className="ai-label">{aiStatus === "online" ? "AI ON" : aiStatus === "checking" ? "..." : "OFF"}</span>
+        </div>
+        <button className="nav-item" onClick={() => { sessionStorage.removeItem("notify_auth"); setAuthed(false); }} title="Logout">🚪</button>
+      </nav>
+
+      {/* ── Context Panel ─────────────────────────────────────── */}
+      {(view === "documents" || view === "dashboard") && (
+        <aside className="context-panel">
+          <div className="panel-header">
+            <div className="panel-title">Documents</div>
+            <div className="panel-search">
+              <span className="panel-search-icon">🔍</span>
+              <input placeholder="Search documents..." />
+            </div>
           </div>
-
-          {wizardStep === 1 && (
-            <div className="wizard-panel">
-              <label>
-                Title
-                <input
-                  placeholder="May 2026 Internal Exam Timetable"
-                  value={title}
-                  onChange={(event) => setTitle(event.target.value)}
-                />
-              </label>
-              <label>
-                Document Type
-                <select value={docType} onChange={(event) => setDocType(event.target.value)}>
-                  <option value="exam_timetable">Exam Timetable</option>
-                  <option value="circular">Circular</option>
-                  <option value="notice">Notice</option>
-                </select>
-              </label>
-              <button type="button" onClick={onContinueToFile}>
-                Continue to File
-              </button>
-              {wizardError && <p className="inline-error">{wizardError}</p>}
-            </div>
-          )}
-
-          {wizardStep === 2 && (
-            <div className="wizard-panel">
-              <label>
-                PDF File
-                <input
-                  type="file"
-                  accept="application/pdf"
-                  onChange={(event) => setFile(event.target.files?.[0] || null)}
-                />
-              </label>
-              <button type="submit" disabled={uploading}>
-                {uploading ? "Upload & Process..." : "Upload & Process"}
-              </button>
-              <div className="tiny-status-line">{processLine} | {processMeta}</div>
-              {wizardError && <p className="inline-error">{wizardError}</p>}
-              {uploadNote && <p className="inline-success">{uploadNote}</p>}
-            </div>
-          )}
-
-          {wizardStep === 3 && (
-            <div className="wizard-panel">
-              <p className="result-line">Processing complete. You can inspect extraction output in the detail panel.</p>
-              <button
-                type="button"
-                onClick={() => {
-                  setWizardStep(1);
-                  setProcessLine("Idle");
-                  setProcessMeta("Waiting to process");
-                  setUploadNote("");
-                }}
-              >
-                Start New Upload
-              </button>
-              {uploadNote && <p className="inline-success">{uploadNote}</p>}
-            </div>
-          )}
-        </form>
-
-        <section className="card">
-          <h2>Recent Documents</h2>
-          <div className="doc-filters">
-            <input
-              placeholder="Search title"
-              value={docQuery}
-              onChange={(event) => setDocQuery(event.target.value)}
-            />
-            <select value={docStatusFilter} onChange={(event) => setDocStatusFilter(event.target.value)}>
-              <option value="">All status</option>
-              <option value="published">Published</option>
-              <option value="review_required">Review required</option>
-              <option value="failed">Failed</option>
-            </select>
-            <select value={docTypeFilter} onChange={(event) => setDocTypeFilter(event.target.value)}>
-              <option value="">All doc types</option>
-              <option value="exam_timetable">Exam timetable</option>
-              <option value="circular">Circular</option>
-              <option value="notice">Notice</option>
-            </select>
-          </div>
-          <button className="secondary" onClick={fetchDocuments} disabled={loadingDocs}>
-            {loadingDocs ? "Refreshing..." : "Refresh"}
-          </button>
-
-          <ul className="doc-list dense">
-            {filteredDocuments.map((doc, index) => (
-              <li key={doc.id}>
-                <button
-                  className={`doc-link dense ${selectedDoc?.document?.id === doc.id ? "selected" : ""}`}
-                  onClick={() => fetchDocumentById(doc.id)}
-                  onKeyDown={(event) => onDocListKeyDown(event, index, doc.id)}
-                >
-                  <strong>{doc.title}</strong>
-                  <span className="doc-meta-line">{doc.docType} • {toDate(doc.createdAt)}</span>
-                  <span className={`badge ${doc.status}`}>{doc.status}</span>
-                </button>
-              </li>
+          <div className="panel-body">
+            {docs.map(doc => (
+              <div key={doc.id} className={`doc-item ${selectedDocId === doc.id ? "active" : ""}`} onClick={() => selectDoc(doc.id)}>
+                <div className="doc-item-title">{doc.title}</div>
+                <div className="doc-item-meta">
+                  <span className={`badge ${doc.status}`}>{doc.status.replace(/_/g, " ")}</span>
+                  <span className="badge secondary">{doc.docType}</span>
+                  {doc.recipientCount > 0 && <span className="text-sm text-muted">👥 {doc.recipientCount}</span>}
+                </div>
+              </div>
             ))}
-            {filteredDocuments.length === 0 && <li>No documents match current search/filter.</li>}
-          </ul>
-        </section>
-      </section>
+            {docs.length === 0 && <div className="empty-state"><p>No documents uploaded yet.</p></div>}
+          </div>
+          <div className="panel-actions">
+            <button className="btn btn-primary btn-full" onClick={() => { setShowUpload(true); setWizStep(1); setJobId(null); setJobProgress(null); }}>📤 Upload Document</button>
+          </div>
+        </aside>
+      )}
 
-      <section className="card detail">
-        <h2>Document Detail</h2>
-        {!selectedDoc && <p>Select a document to inspect extraction output.</p>}
-
-        {selectedDoc && (
-          <div className="detail-body">
-            <p>
-              <strong>Title:</strong> {selectedDoc.document.title}
-            </p>
-            <p>
-              <strong>Status:</strong> {selectedDoc.document.status}
-            </p>
-
-            <div className="view-tabs">
-              <button className={`tab-btn ${detailTab === "summary" ? "active" : ""}`} onClick={() => setDetailTab("summary")}>
-                Summary
-              </button>
-              <button className={`tab-btn ${detailTab === "events" ? "active" : ""}`} onClick={() => setDetailTab("events")}>
-                Events
-              </button>
-              <button className={`tab-btn ${detailTab === "timeline" ? "active" : ""}`} onClick={() => setDetailTab("timeline")}>
-                Timeline
-              </button>
-              {isTimetableDoc && (
-                <button className={`tab-btn ${detailTab === "timetable" ? "active" : ""}`} onClick={() => setDetailTab("timetable")}>
-                  Timetable Preview
-                </button>
-              )}
-              <button className={`tab-btn ${detailTab === "json" ? "active" : ""}`} onClick={() => setDetailTab("json")}>
-                Raw JSON
-              </button>
-            </div>
-
-            {(detailTab === "events" || detailTab === "timeline") && (
-              <div className="filters-section">
-                <h4>Event Filters</h4>
-                {availableFilters.departments.length > 0 && (
-                  <label>
-                    Department
-                    <select value={filterDept} onChange={(event) => setFilterDept(event.target.value)}>
-                      <option value="">All</option>
-                      {availableFilters.departments.map((dept) => (
-                        <option key={dept} value={dept}>
-                          {dept}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-                {availableFilters.years.length > 0 && (
-                  <label>
-                    Year
-                    <select value={filterYear} onChange={(event) => setFilterYear(event.target.value)}>
-                      <option value="">All</option>
-                      {availableFilters.years.map((year) => (
-                        <option key={year} value={year}>
-                          {year}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-                {availableFilters.sections.length > 0 && (
-                  <label>
-                    Section
-                    <select value={filterSection} onChange={(event) => setFilterSection(event.target.value)}>
-                      <option value="">All</option>
-                      {availableFilters.sections.map((section) => (
-                        <option key={section} value={section}>
-                          {section}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
+      {/* ── Main Content ──────────────────────────────────────── */}
+      <main className="main-content">
+        {/* ═══ DASHBOARD ═══ */}
+        {view === "dashboard" && (
+          <>
+            <div className="main-header"><div><h2>Dashboard</h2><p>AI-Powered Communication System Overview</p></div></div>
+            <div className="main-body">
+              <div className="stats-grid">
+                <div className="stat-card"><div className="stat-card-icon">📄</div><div className="stat-card-value">{docs.length}</div><div className="stat-card-label">Total Documents</div></div>
+                <div className={`stat-card ${pendingDocs.length > 0 ? "warning" : ""}`}><div className="stat-card-icon">⏳</div><div className="stat-card-value">{pendingDocs.length}</div><div className="stat-card-label">Awaiting Approval</div></div>
+                <div className="stat-card"><div className="stat-card-icon">👥</div><div className="stat-card-value">{students.length}</div><div className="stat-card-label">Students Enrolled</div></div>
+                <div className="stat-card success"><div className="stat-card-icon">✅</div><div className="stat-card-value">{publishedDocs.length}</div><div className="stat-card-label">Notifications Sent</div></div>
               </div>
-            )}
 
-            {detailTab === "summary" && (
-              <div className="summary-grid">
-                <div className="summary-card">
-                  <h3>Extraction Summary</h3>
-                  <p>
-                    <strong>Provider used:</strong> {extraction.provider || extraction.meta?.provider || "Unknown"}
-                  </p>
-                  <p>
-                    <strong>Model:</strong> {extraction.model || extraction.meta?.model || "Unknown"}
-                  </p>
-                  <p>
-                    <strong>Confidence:</strong>{" "}
-                    <span className={`confidence-scale ${confidenceClass}`}>{(confidenceScore * 100).toFixed(0)}%</span>
-                  </p>
-                  {fallbackTriggered && (
-                    <div className="warning-banner">
-                      Fallback or stub provider appears to be used. Validate outputs before publishing.
-                    </div>
-                  )}
-                </div>
-                <div className="summary-card">
-                  <h3>Counts</h3>
-                  <p>
-                    <strong>Events extracted:</strong> {events.length}
-                  </p>
-                  <p>
-                    <strong>Departments:</strong> {availableFilters.departments.length || 0}
-                  </p>
-                  <p>
-                    <strong>Years:</strong> {availableFilters.years.length || 0}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {detailTab === "events" && (
-              <div className="events-table-wrap">
-                {filteredEvents.length === 0 ? (
-                  <div className="empty-state-card">
-                    <h3>No events extracted</h3>
-                    <p>Probable reason: OCR quality low or timetable pattern not recognized.</p>
-                    <div className="empty-actions">
-                      <button className="secondary" onClick={runFallbackProvider}>Run fallback provider</button>
-                      <button className="secondary" onClick={() => setShowOcrText((current) => !current)}>View OCR text</button>
-                      <button className="secondary" onClick={downloadDebugJson}>Download debug JSON</button>
-                    </div>
-                  </div>
-                ) : (
-                  <table className="events-table compact">
-                    <thead>
-                      <tr>
-                        <th>Date</th>
-                        <th>Time</th>
-                        <th>Subject</th>
-                        <th>Scope</th>
-                        <th />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredEvents.map((event, index) => (
-                        <>
-                          <tr key={`row-${index}`}>
-                            <td>{event.date || "-"}</td>
-                            <td>{event.time || event.startTime || "-"}</td>
-                            <td>{event.subjectName || event.subjectCode || "Unknown"}</td>
-                            <td>
-                              <div className="chips">
-                                {(event.departments || []).map((dept) => (
-                                  <span key={`${index}-${dept}`} className="chip">{dept}</span>
-                                ))}
-                                {(event.years || []).map((year) => (
-                                  <span key={`${index}-${year}`} className="chip alt">Y{year}</span>
-                                ))}
-                                {(event.sections || []).map((section) => (
-                                  <span key={`${index}-${section}`} className="chip alt">S{section}</span>
-                                ))}
-                              </div>
-                            </td>
-                            <td>
-                              <button className="secondary tiny" onClick={() => toggleEvent(index)}>
-                                {eventExpanded[index] ? "Hide" : "Expand"}
-                              </button>
-                            </td>
-                          </tr>
-                          {eventExpanded[index] && (
-                            <tr key={`expand-${index}`} className="expanded-row">
-                              <td colSpan={5}>
-                                <strong>Instructions:</strong> {event.instructions || "No instructions"}
-                              </td>
-                            </tr>
-                          )}
-                        </>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-
-                {showOcrText && (
-                  <pre className="json-view">
-                    {extraction.rawText || extraction.ocrText || "OCR text is not available in this payload."}
-                  </pre>
-                )}
-              </div>
-            )}
-
-            {detailTab === "timeline" && (
-              <div className="timeline-view">
-                {sortedByDeadline.length === 0 ? (
-                  <div className="empty-state-card">
-                    <h3>No events extracted</h3>
-                    <p>Probable reason: parser did not find date-linked records for this document.</p>
-                    <div className="empty-actions">
-                      <button className="secondary" onClick={runFallbackProvider}>Run fallback provider</button>
-                      <button className="secondary" onClick={() => setShowOcrText((current) => !current)}>View OCR text</button>
-                      <button className="secondary" onClick={downloadDebugJson}>Download debug JSON</button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="timeline">
-                    {sortedByDeadline.map((event, index) => (
-                      <div key={event.eventId || index} className="timeline-item">
-                        <div className="timeline-date">{event.date || "No date"}</div>
-                        <div className="timeline-content">
-                          <h4>{event.subjectName || event.subjectCode || "Unknown event"}</h4>
-                          <p>{event.instructions || "No instructions"}</p>
+              <div className="dashboard-grid">
+                <div className="section-card">
+                  <div className="section-card-header"><div className="section-card-title">⏳ Pending Approvals</div></div>
+                  <div className="section-card-body">
+                    {pendingDocs.length === 0 && <p className="text-sm text-muted">No pending documents. All clear!</p>}
+                    {pendingDocs.map(doc => (
+                      <div key={doc.id} className="approval-item" onClick={() => selectDoc(doc.id)}>
+                        <div className="approval-icon">📋</div>
+                        <div className="approval-info">
+                          <div className="approval-title">{doc.title}</div>
+                          <div className="approval-meta">{doc.docType} · {doc.recipientCount || 0} recipients matched</div>
                         </div>
+                        <button className="btn btn-warning btn-sm" onClick={e => { e.stopPropagation(); setShowApproval(doc); }}>Review</button>
                       </div>
                     ))}
                   </div>
-                )}
-              </div>
-            )}
+                </div>
 
-            {isTimetableDoc && detailTab === "timetable" && (
-              <div className="timetable-preview">
-                {timetableRows.length === 0 ? (
-                  <p className="no-events">No timetable rows found for this document.</p>
-                ) : (
-                  timetableRows.map((row, index) => (
-                    <div key={index} className="timetable-day-card">
-                      <h4>{row.date}</h4>
-                      <ul>
-                        {(row.entries || row.subjects || []).map((entry, rowIndex) => (
-                          <li key={rowIndex}>
-                            {entry.subjectName || entry.subjectCode || entry.subject || "Subject"}
-                          </li>
-                        ))}
-                      </ul>
+                <div className="section-card">
+                  <div className="section-card-header"><div className="section-card-title">📊 Recent Activity</div></div>
+                  <div className="section-card-body">
+                    {docs.slice(0, 6).map(doc => (
+                      <div key={doc.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
+                        <span style={{ fontSize: 12, flex: 1 }} className="truncate">{doc.title}</span>
+                        <span className={`badge ${doc.status}`}>{doc.status.replace(/_/g, " ")}</span>
+                      </div>
+                    ))}
+                    {docs.length === 0 && <p className="text-sm text-muted">No recent activity.</p>}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* ═══ DOCUMENTS DETAIL ═══ */}
+        {view === "documents" && (
+          <>
+            {!selectedDoc ? (
+              <div className="empty-state" style={{ flex: 1 }}><div className="empty-state-icon">📄</div><h3>Select a document</h3><p>Choose a document from the sidebar to view its AI analysis and routing details.</p></div>
+            ) : (
+              <div className="detail-shell">
+                <div className="detail-header">
+                  <div className="detail-title-row">
+                    <div>
+                      <div className="detail-title">{selectedDoc.document.title}</div>
+                      <div className="detail-subtitle">
+                        {selectedDoc.document.docType?.toUpperCase()} · Provider: {extraction.provider || "N/A"} · {fmtDate(selectedDoc.document.createdAt)}
+                      </div>
                     </div>
-                  ))
-                )}
+                    <div className="flex gap-2">
+                      <span className={`badge ${selectedDoc.document.status}`}>{selectedDoc.document.status?.replace(/_/g, " ")}</span>
+                      {selectedDoc.document.status === "pending_approval" && (
+                        <button className="btn btn-warning btn-sm" onClick={() => setShowApproval(selectedDoc.document)}>Review & Approve</button>
+                      )}
+                    </div>
+                  </div>
+
+                  {selectedDoc.document.status === "pending_approval" && (
+                    <div className="approval-banner">
+                      <div className="approval-banner-icon">⚠️</div>
+                      <div className="approval-banner-text">
+                        <strong>Awaiting Admin Approval</strong>
+                        <span>{selectedDoc.recipientCount || 0} users matched — notifications held until approved.</span>
+                      </div>
+                      <div className="approval-banner-actions">
+                        <button className="btn btn-success btn-sm" onClick={() => approveDoc(selectedDoc.document.id)}>✓ Approve</button>
+                        <button className="btn btn-danger btn-sm" onClick={() => setShowApproval(selectedDoc.document)}>✕ Reject</button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="detail-tabs">
+                    {["intelligence", "schedule", "routing", "recipients", "raw"].map(t => (
+                      <button key={t} className={`detail-tab ${detailTab === t ? "active" : ""}`} onClick={() => { setDetailTab(t); if (t === "recipients") fetchRecipients(selectedDocId); }}>
+                        {t === "intelligence" ? "🧠 Intelligence" : t === "schedule" ? "📅 Schedule" : t === "routing" ? "🔀 Routing" : t === "recipients" ? `👥 Recipients (${recipients.length})` : "{ } Raw Data"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="detail-body">
+                  {/* INTELLIGENCE */}
+                  {detailTab === "intelligence" && (
+                    <>
+                      <div className="intelligence-grid">
+                        <div className="intel-card">
+                          <div className="intel-card-label">Document Title</div>
+                          <div className="intel-card-value">{structured.title || selectedDoc.document.title}</div>
+                        </div>
+                        <div className="intel-card">
+                          <div className="intel-card-label">Date</div>
+                          <div className="intel-card-value">{structured.date || "-"}</div>
+                        </div>
+                        <div className="intel-card">
+                          <div className="intel-card-label">Intent</div>
+                          <div className="intel-card-value">{structured.intent?.purpose || "-"} / {structured.intent?.mode || "-"}</div>
+                        </div>
+                        <div className="intel-card">
+                          <div className="intel-card-label">AI Confidence</div>
+                          <div className="intel-card-value">{((extraction.confidenceScore || 0) * 100).toFixed(0)}%</div>
+                          <div className="confidence-bar-track">
+                            <div className="confidence-bar-fill" style={{ width: `${(extraction.confidenceScore || 0) * 100}%`, background: (extraction.confidenceScore || 0) > 0.7 ? "var(--success)" : "var(--warning)" }} />
+                          </div>
+                        </div>
+                      </div>
+                      <div className="intel-card mb-3">
+                        <div className="intel-card-label">AI Summary</div>
+                        <div className="intel-card-value" style={{ fontSize: 13, fontWeight: 400, lineHeight: 1.6 }}>{structured.summary || "No summary extracted."}</div>
+                      </div>
+                      <div className="intel-card mb-3">
+                        <div className="intel-card-label">Target Audience</div>
+                        <div className="tag-list mt-2">
+                          {(structured.targetAudience || []).map((a, i) => <span key={i} className="tag">{a}</span>)}
+                          {(!structured.targetAudience || structured.targetAudience.length === 0) && <span className="text-sm text-muted">All users (no specific audience detected)</span>}
+                        </div>
+                      </div>
+                      <div className="intel-card">
+                        <div className="intel-card-label">Provider / Model</div>
+                        <div className="flex gap-2 mt-2">
+                          <span className={`badge ${extraction.provider}`}>{extraction.provider}</span>
+                          <span className="badge secondary">{extraction.model}</span>
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {/* SCHEDULE */}
+                  {detailTab === "schedule" && (
+                    <div className="data-table-wrap">
+                      <table className="data-table">
+                        <thead><tr><th>Event</th><th>Date</th><th>Time</th><th>Scope</th><th>Instructions</th><th>Conf.</th></tr></thead>
+                        <tbody>
+                          {events.map((ev, i) => (
+                            <tr key={i}>
+                              <td><strong>{ev.subjectName || ev.eventId || "-"}</strong></td>
+                              <td>{ev.date || "TBA"}</td>
+                              <td>{ev.startTime || "-"}{ev.endTime ? ` → ${ev.endTime}` : ""}</td>
+                              <td>{(ev.departments || []).concat(ev.years || []).join(", ") || "-"}</td>
+                              <td style={{ fontSize: 12, maxWidth: 200 }}>{ev.instructions || "-"}</td>
+                              <td><span className={`badge ${(ev.confidence||0) > 0.7 ? "success" : "warning"}`}>{((ev.confidence||0)*100).toFixed(0)}%</span></td>
+                            </tr>
+                          ))}
+                          {events.length === 0 && <tr><td colSpan={6} className="text-sm text-muted" style={{ textAlign: "center", padding: 40 }}>No schedule events extracted.</td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* ROUTING */}
+                  {detailTab === "routing" && (
+                    <div className="routing-flow">
+                      <div className="routing-step">
+                        <div className="routing-step-label">Step 1 — Document Analysis</div>
+                        <p className="text-sm">AI identified this as a <strong>{structured.documentType || selectedDoc.document.docType}</strong> with intent: <strong>{structured.intent?.purpose}</strong></p>
+                      </div>
+                      <div className="routing-step">
+                        <div className="routing-step-label">Step 2 — Audience Detection</div>
+                        <div className="tag-list mt-2">{(structured.targetAudience || ["all users"]).map((a, i) => <span key={i} className="tag">{a}</span>)}</div>
+                      </div>
+                      <div className="routing-step">
+                        <div className="routing-step-label">Step 3 — Condition Extraction</div>
+                        <div className="tag-list mt-2">
+                          {(structured.sections?.schedule || []).map((s, i) => (
+                            <span key={i} className="tag" style={{ background: "#fef3c7", color: "#92400e" }}>
+                              {s.semester || s.exam || s.students || JSON.stringify(s).slice(0, 60)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="routing-step">
+                        <div className="routing-step-label">Step 4 — Recipient Match</div>
+                        <p className="text-sm"><strong>{selectedDoc.recipientCount || recipients.length}</strong> students/faculty matched the conditions above</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* RECIPIENTS */}
+                  {detailTab === "recipients" && (
+                    <div className="data-table-wrap">
+                      <table className="data-table">
+                        <thead><tr><th>User ID</th><th>Full Name</th><th>Role</th><th>Department</th><th>Year</th><th>Conditions</th><th>Status</th></tr></thead>
+                        <tbody>
+                          {recipients.map((r, i) => (
+                            <tr key={i}>
+                              <td>{r.userId}</td>
+                              <td><strong>{r.userFullName}</strong></td>
+                              <td><span className="badge secondary">{r.userRole}</span></td>
+                              <td>{r.userDepartment || "-"}</td>
+                              <td>{r.userYear || "-"}</td>
+                              <td><div className="tag-list">{(r.matchedConditions || []).map(c => <span key={c} className="tag" style={{ fontSize: 10 }}>{c}</span>)}</div></td>
+                              <td><span className={`badge ${r.status}`}>{r.status}</span></td>
+                            </tr>
+                          ))}
+                          {recipients.length === 0 && <tr><td colSpan={7} style={{ textAlign: "center", padding: 40 }} className="text-sm text-muted">No recipients matched. Seed students first.</td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* RAW DATA */}
+                  {detailTab === "raw" && <pre className="json-view">{JSON.stringify(extraction, null, 2)}</pre>}
+                </div>
               </div>
             )}
+          </>
+        )}
 
-            {detailTab === "json" && (
-              <pre className="json-view">{JSON.stringify(selectedDoc.latestVersion?.extraction || {}, null, 2)}</pre>
+        {/* ═══ STUDENTS ═══ */}
+        {view === "students" && (
+          <>
+            <div className="main-header">
+              <div><h2>Student Directory</h2><p>Manage student profiles for intelligent notification routing</p></div>
+              <div className="flex gap-2">
+                <button className="btn btn-ghost btn-sm" onClick={seedStudents}>🌱 Seed Demo</button>
+                <input type="file" accept=".csv" ref={csvRef} hidden onChange={e => { const f = e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = ev => importCsv(ev.target.result); r.readAsText(f); }} />
+                <button className="btn btn-ghost btn-sm" onClick={() => csvRef.current?.click()}>📥 Import CSV</button>
+              </div>
+            </div>
+            <div className="main-body">
+              <div className="data-table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>Reg. No</th><th>Name</th><th>Dept</th><th>Year</th><th>Sem</th><th>Gender</th><th>Hostel</th><th>Arrears</th><th>Category</th></tr></thead>
+                  <tbody>
+                    {students.map(s => (
+                      <tr key={s._id}>
+                        <td><strong>{s.registrationNo}</strong></td>
+                        <td>{s.fullName}</td>
+                        <td><span className="badge primary">{s.department || "-"}</span></td>
+                        <td>{s.year || "-"}</td>
+                        <td>{s.semester || "-"}</td>
+                        <td>{s.gender || "-"}</td>
+                        <td>{s.isHostelStudent ? "✅" : "❌"}</td>
+                        <td>{s.hasArrears ? <span className="badge danger">YES</span> : "No"}</td>
+                        <td>{s.category || "-"}</td>
+                      </tr>
+                    ))}
+                    {students.length === 0 && <tr><td colSpan={9} style={{ textAlign: "center", padding: 40 }} className="text-sm text-muted">No students. Use "Seed Demo" or "Import CSV".</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* ═══ NOTIFICATIONS ═══ */}
+        {view === "notifications" && (
+          <>
+            <div className="main-header">
+              <div><h2>Notifications</h2><p>Review queue and delivery history</p></div>
+              <div className="flex gap-2">
+                <button className={`btn ${notiTab === "queue" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => setNotiTab("queue")}>⏳ Review Queue ({pendingDocs.length})</button>
+                <button className={`btn ${notiTab === "sent" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => { setNotiTab("sent"); fetchSentHistory(); }}>✅ Sent History</button>
+              </div>
+            </div>
+            <div className="main-body">
+              {notiTab === "queue" && (
+                <>
+                  {pendingDocs.length === 0 && <div className="empty-state"><div className="empty-state-icon">✅</div><h3>All clear!</h3><p>No pending approvals.</p></div>}
+                  {pendingDocs.map(doc => (
+                    <div key={doc.id} className="review-card urgent">
+                      <div className="review-card-header">
+                        <div><div className="review-card-title">{doc.title}</div><div className="review-card-meta">{doc.docType} · Uploaded {fmtDate(doc.createdAt)} · {doc.recipientCount || 0} recipients</div></div>
+                        <span className={`badge ${doc.status}`}>{doc.status.replace(/_/g, " ")}</span>
+                      </div>
+                      <div className="review-card-footer">
+                        <span className="text-sm text-muted">AI Provider: <strong>{doc.provider}</strong> · Confidence: {((doc.confidenceScore || 0) * 100).toFixed(0)}%</span>
+                        <div className="flex gap-2">
+                          <button className="btn btn-success btn-sm" onClick={() => approveDoc(doc.id)}>✓ Approve & Send</button>
+                          <button className="btn btn-danger btn-sm" onClick={() => setShowApproval(doc)}>✕ Reject</button>
+                          <button className="btn btn-ghost btn-sm" onClick={() => selectDoc(doc.id)}>View Details</button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+              {notiTab === "sent" && (
+                <div className="data-table-wrap">
+                  <table className="data-table">
+                    <thead><tr><th>Document</th><th>Recipient</th><th>Department</th><th>Conditions</th><th>Delivered At</th></tr></thead>
+                    <tbody>
+                      {sentHistory.map((n, i) => (
+                        <tr key={i}>
+                          <td><strong>{n.documentTitle}</strong></td>
+                          <td>{n.userFullName}</td>
+                          <td>{n.userDepartment || "-"}</td>
+                          <td><div className="tag-list">{(n.matchedConditions || []).map(c => <span key={c} className="tag" style={{ fontSize: 10 }}>{c}</span>)}</div></td>
+                          <td>{fmtDate(n.approvedAt || n.updatedAt)}</td>
+                        </tr>
+                      ))}
+                      {sentHistory.length === 0 && <tr><td colSpan={5} style={{ textAlign: "center", padding: 40 }} className="text-sm text-muted">No sent notifications yet.</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* ═══ SETTINGS ═══ */}
+        {view === "settings" && (
+          <>
+            <div className="main-header"><div><h2>Settings</h2><p>AI provider config and system settings</p></div></div>
+            <div className="main-body">
+              <div className="section-card" style={{ maxWidth: 500 }}>
+                <div className="section-card-header"><div className="section-card-title">🤖 AI Provider</div></div>
+                <div className="section-card-body">
+                  <div className="form-group">
+                    <label className="form-label">Default Provider</label>
+                    <select className="form-select" value={uProvider} onChange={e => setUProvider(e.target.value)}>
+                      <option value="ollama">Local AI (Mistral 7B via Ollama)</option>
+                      <option value="gemini">Cloud AI (Gemini)</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-3 mt-3">
+                    <div className={`ai-dot ${aiStatus}`} style={{ width: 14, height: 14 }} />
+                    <span className="text-sm">Ollama Status: <strong>{aiStatus === "online" ? "Connected" : aiStatus === "checking" ? "Checking..." : "Offline"}</strong></span>
+                    <button className="btn btn-ghost btn-sm" onClick={checkAi}>Refresh</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </main>
+
+      {/* ═══ UPLOAD MODAL (steps 1 & 2 only — non-blocking) ═══ */}
+      {showUpload && (
+        <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) setShowUpload(false); }}>
+          <div className="modal">
+            <div className="modal-header"><div className="modal-title">📤 Upload Document</div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowUpload(false)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div className="wizard-steps">{[1,2].map(s => <div key={s} className={`wizard-step-dot ${wizStep > s ? "done" : wizStep === s ? "active" : ""}`} />)}</div>
+
+              {wizStep === 1 && (
+                <>
+                  <div className="form-group"><label className="form-label">Title</label><input className="form-input" value={uTitle} onChange={e => setUTitle(e.target.value)} placeholder="Document title" /></div>
+                  <div className="form-group"><label className="form-label">Type</label><select className="form-select" value={uDocType} onChange={e => setUDocType(e.target.value)}><option value="circular">Circular</option><option value="exam_timetable">Timetable</option><option value="notice">Notice</option></select></div>
+                  <div className="form-group"><label className="form-label">AI Model</label><select className="form-select" value={uProvider} onChange={e => setUProvider(e.target.value)}><option value="ollama">Local AI (Mistral)</option><option value="gemini">Cloud AI (Gemini)</option></select></div>
+                  <button className="btn btn-primary btn-full mt-3" onClick={() => setWizStep(2)}>Next →</button>
+                </>
+              )}
+
+              {wizStep === 2 && (
+                <>
+                  <div className="form-group">
+                    <label className="form-label">Select PDF File</label>
+                    <input type="file" accept=".pdf" className="form-input" onChange={e => setUFile(e.target.files?.[0] || null)} />
+                  </div>
+                  <div className="flex gap-2 mt-3">
+                    <button className="btn btn-ghost" onClick={() => setWizStep(1)}>← Back</button>
+                    <button className="btn btn-primary" disabled={!uFile} onClick={handleUpload} style={{ flex: 1 }}>Upload & Analyze</button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ FLOATING PROGRESS WIDGET (non-blocking) ═══ */}
+      {jobProgress && (
+        <div className="floating-progress">
+          <div className="floating-progress-header">
+            <div className={`progress-step-label ${jobProgress.stage !== "done" && jobProgress.stage !== "error" ? "spinning" : ""}`}>
+              {jobProgress.stage === "done" ? "✅" : jobProgress.stage === "error" ? "❌" : "🔔"} {jobProgress.label || "Processing..."}
+            </div>
+            {(jobProgress.stage === "done" || jobProgress.stage === "error") && (
+              <button className="btn btn-ghost btn-sm" style={{ padding: "2px 6px", fontSize: 11 }} onClick={() => { setJobId(null); setJobProgress(null); }}>✕</button>
             )}
           </div>
-        )}
-      </section>
+          <div className="progress-track" style={{ height: 6 }}>
+            <div className={`progress-fill ${jobProgress.stage === "done" ? "done" : jobProgress.stage === "error" ? "error" : ""}`} style={{ width: `${jobProgress.pct || 5}%` }} />
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+            <span className="progress-pct">{jobProgress.pct || 0}%{jobProgress.elapsedSec ? ` · ${jobProgress.elapsedSec}s` : ""}</span>
+            {jobProgress.estimatedRemainingSec > 0 && <span className="progress-eta">ETA: {fmtTime(jobProgress.estimatedRemainingSec)}</span>}
+          </div>
+        </div>
+      )}
 
-      {error && <p className="error">{error}</p>}
+      {/* ═══ APPROVAL MODAL ═══ */}
+      {showApproval && (
+        <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) setShowApproval(null); }}>
+          <div className="modal">
+            <div className="modal-header"><div className="modal-title">⚠️ Review & Approve</div><button className="btn btn-ghost btn-sm" onClick={() => setShowApproval(null)}>✕</button></div>
+            <div className="modal-body">
+              <div className="intel-card mb-3">
+                <div className="intel-card-label">Document</div>
+                <div className="intel-card-value">{showApproval.title}</div>
+              </div>
+              <div className="intel-card mb-3">
+                <div className="intel-card-label">Recipients Matched</div>
+                <div className="intel-card-value">{showApproval.recipientCount || 0} users</div>
+              </div>
+              <div className="divider" />
+              <div className="form-group">
+                <label className="form-label">Rejection Reason (optional)</label>
+                <input className="form-input" value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="Reason for rejection (if rejecting)" />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-danger" onClick={() => rejectDoc(showApproval.id)}>✕ Reject</button>
+              <button className="btn btn-success" onClick={() => approveDoc(showApproval.id)}>✓ Approve & Send Notifications</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ ERROR TOAST ═══ */}
+      {error && (
+        <div style={{ position: "fixed", bottom: 20, right: 20, padding: "12px 24px", background: "#fee2e2", color: "#991b1b", borderRadius: 12, border: "1px solid #fca5a5", boxShadow: "var(--shadow-lg)", zIndex: 200, cursor: "pointer" }} onClick={() => setError("")}>
+          {error}
+        </div>
+      )}
     </div>
   );
 }
-
-export default App;
