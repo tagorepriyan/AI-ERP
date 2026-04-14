@@ -5,6 +5,7 @@
  */
 
 const jobs = new Map();
+const abortControllers = new Map(); // Store AbortControllers for cancellation
 
 const STAGES = [
   { id: "upload",    label: "Document received",              pct: 5,  estSec: 1 },
@@ -29,6 +30,7 @@ function createJob(jobId) {
     error: null
   };
   jobs.set(jobId, job);
+  abortControllers.set(jobId, new AbortController());
   return job;
 }
 
@@ -46,7 +48,7 @@ function updateJob(jobId, stageId, extraLabel = "") {
 
   job.stage = stageId;
   job.label = extraLabel || stage.label;
-  job.pct = stage.pct;
+  job.pct = Math.max(job.pct, stage.pct); // Don't allow pct to go backwards
   job.estimatedRemainingSec = Math.max(0, remaining);
   job.elapsedSec = Math.round(elapsedSec);
   job.updatedAt = Date.now();
@@ -60,6 +62,7 @@ function failJob(jobId, errorMsg) {
   job.pct = 0;
   job.error = errorMsg;
   job.updatedAt = Date.now();
+  abortControllers.delete(jobId);
 }
 
 function completeJob(jobId, recipientCount = 0) {
@@ -72,13 +75,35 @@ function completeJob(jobId, recipientCount = 0) {
   job.elapsedSec = Math.round((Date.now() - job.startedAt) / 1000);
   job.recipientCount = recipientCount;
   job.updatedAt = Date.now();
+  abortControllers.delete(jobId);
 
   // Clean up after 10 minutes
-  setTimeout(() => jobs.delete(jobId), 10 * 60 * 1000);
+  setTimeout(() => {
+    jobs.delete(jobId);
+    abortControllers.delete(jobId);
+  }, 10 * 60 * 1000);
 }
 
 function getJob(jobId) {
   return jobs.get(jobId) || null;
 }
 
-module.exports = { createJob, updateJob, failJob, completeJob, getJob, STAGES };
+function getJobSignal(jobId) {
+  return abortControllers.get(jobId)?.signal;
+}
+
+function cancelJob(jobId) {
+  const controller = abortControllers.get(jobId);
+  if (controller) {
+    controller.abort(new Error("Job cancelled by user"));
+    failJob(jobId, "Cancelled by user");
+    return true;
+  }
+  return false;
+}
+
+function isCancelled(jobId) {
+  return abortControllers.get(jobId)?.signal?.aborted || false;
+}
+
+module.exports = { createJob, updateJob, failJob, completeJob, getJob, getJobSignal, cancelJob, isCancelled, STAGES };

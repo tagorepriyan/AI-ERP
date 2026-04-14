@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import LoginPage from "./LoginPage";
+import ReviewPanel from "./ReviewPanel";
+import ComposeModal from "./ComposeModal";
 
 const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
 
@@ -41,9 +43,9 @@ export default function App() {
   const [jobId, setJobId] = useState(null);
   const [jobProgress, setJobProgress] = useState(null);
 
-  // Approval modal
-  const [showApproval, setShowApproval] = useState(null);
-  const [rejectReason, setRejectReason] = useState("");
+  // Review panel (replaces old simple approval modal)
+  const [showReview, setShowReview] = useState(null);
+  const [showCompose, setShowCompose] = useState(false);
 
   // AI status
   const [aiStatus, setAiStatus] = useState("checking");
@@ -57,6 +59,21 @@ export default function App() {
 
   // CSV import
   const csvRef = useRef();
+
+  // Workflow Settings
+  const [settings, setSettings] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("notify_settings")) || {}; }
+    catch { return {}; }
+  });
+  const skipHybridOcr = settings.skipHybridOcr || false;
+  const aiEnabled = settings.aiEnabled !== false;
+  const useFallbacks = settings.useFallbacks !== false;
+
+  const updateSetting = (key, value) => {
+    const next = { ...settings, [key]: value };
+    setSettings(next);
+    localStorage.setItem("notify_settings", JSON.stringify(next));
+  };
 
   // ── Fetchers ────────────────────────────────────────────────────────────────
   const fetchDocs = useCallback(async () => {
@@ -130,32 +147,64 @@ export default function App() {
   const structured = extraction?.structured || {};
   const events = extraction?.events || [];
 
-  // ── Actions ─────────────────────────────────────────────────────────────────
-  async function handleUpload() {
+  function handleUpload() {
     if (!uFile) return;
     const fd = new FormData();
     fd.append("file", uFile);
     fd.append("title", uTitle || uFile.name);
     fd.append("docType", uDocType);
     fd.append("provider", uProvider);
+    fd.append("settings", JSON.stringify(settings));
 
     // Close the modal immediately so the user is NOT blocked
     setShowUpload(false);
     setWizStep(1);
-    setJobProgress({ pct: 5, label: "Uploading document...", stage: "upload" });
+    setJobProgress({ pct: 0, label: "Uploading document...", stage: "upload" });
 
-    try {
-      const r = await fetch(`${API}/documents/upload`, { method: "POST", headers, body: fd });
-      const d = await r.json();
-      if (d.jobId) {
-        setJobId(d.jobId);
-      } else {
-        setJobProgress({ pct: 100, label: "Done", stage: "done" });
-        fetchDocs();
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API}/documents/upload`);
+    xhr.setRequestHeader("x-tenant-id", tenantId);
+
+    // Track upload progress natively BEFORE the backend processing even starts
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        const percent = Math.round((e.loaded / e.total) * 5); // Upload is first 5% of pipeline
+        setJobProgress(prev => prev ? { ...prev, pct: percent } : null);
       }
-    } catch (e) {
-      setJobProgress({ pct: 0, label: `Error: ${e.message}`, stage: "error" });
-    }
+    };
+
+    xhr.onload = () => {
+      try {
+        const d = JSON.parse(xhr.responseText);
+        if (xhr.status >= 200 && xhr.status < 300) {
+          if (d.jobId) {
+            setJobId(d.jobId);
+          } else {
+            setJobProgress({ pct: 100, label: "Done", stage: "done" });
+            fetchDocs();
+          }
+        } else {
+          setJobProgress({ pct: 0, label: `Error: ${d.error || 'Upload failed'}`, stage: "error" });
+        }
+      } catch (e) {
+        setJobProgress({ pct: 0, label: `Error parsing response`, stage: "error" });
+      }
+    };
+
+    xhr.onerror = () => {
+      setJobProgress({ pct: 0, label: `Network error`, stage: "error" });
+    };
+
+    xhr.send(fd);
+  }
+
+  async function cancelJob() {
+    if (!jobId) return;
+    try {
+      await fetch(`${API}/jobs/${jobId}/cancel`, { method: "POST", headers: jsonHeaders });
+      setJobId(null);
+      setJobProgress({ pct: 0, label: "Cancelled by user", stage: "error" });
+    } catch(e) {}
   }
 
   // Poll job progress
@@ -179,23 +228,21 @@ export default function App() {
     return () => { active = false; };
   }, [jobId]);
 
-  async function approveDoc(docId) {
-    try {
-      await fetch(`${API}/documents/${docId}/approve`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ approvedBy: "admin" }) });
-      setShowApproval(null);
-      fetchDocs();
-      if (selectedDocId === docId) fetchDocDetail(docId);
-    } catch (e) { setError(e.message); }
+  function openReview(doc) {
+    // For a doc from the list (minimal data), fetch full detail first
+    if (selectedDocId === doc.id) {
+      setShowReview({ doc, extraction, recipients });
+    } else {
+      selectDoc(doc.id);
+      // Small delay to let data load
+      setTimeout(() => setShowReview({ doc, extraction: null, recipients: [] }), 200);
+    }
   }
 
-  async function rejectDoc(docId) {
-    try {
-      await fetch(`${API}/documents/${docId}/reject`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ reason: rejectReason || "Rejected by admin", rejectedBy: "admin" }) });
-      setShowApproval(null);
-      setRejectReason("");
-      fetchDocs();
-      if (selectedDocId === docId) fetchDocDetail(docId);
-    } catch (e) { setError(e.message); }
+  function handleReviewAction(action) {
+    setShowReview(null);
+    fetchDocs();
+    if (selectedDocId) { fetchDocDetail(selectedDocId); fetchRecipients(selectedDocId); }
   }
 
   async function seedStudents() {
@@ -358,7 +405,7 @@ export default function App() {
                           <div className="approval-title">{doc.title}</div>
                           <div className="approval-meta">{doc.docType} · {doc.recipientCount || 0} recipients matched</div>
                         </div>
-                        <button className="btn btn-warning btn-sm" onClick={e => { e.stopPropagation(); setShowApproval(doc); }}>Review</button>
+                        <button className="btn btn-warning btn-sm" onClick={e => { e.stopPropagation(); openReview(doc); }}>Review</button>
                       </div>
                     ))}
                   </div>
@@ -399,7 +446,7 @@ export default function App() {
                     <div className="flex gap-2">
                       <span className={`badge ${selectedDoc.document.status}`}>{selectedDoc.document.status?.replace(/_/g, " ")}</span>
                       {selectedDoc.document.status === "pending_approval" && (
-                        <button className="btn btn-warning btn-sm" onClick={() => setShowApproval(selectedDoc.document)}>Review & Approve</button>
+                        <button className="btn btn-warning btn-sm" onClick={() => setShowReview({ doc: { id: selectedDoc.document.id, ...selectedDoc.document }, extraction, recipients })}>Review & Approve</button>
                       )}
                     </div>
                   </div>
@@ -597,8 +644,9 @@ export default function App() {
             <div className="main-header">
               <div><h2>Notifications</h2><p>Review queue and delivery history</p></div>
               <div className="flex gap-2">
-                <button className={`btn ${notiTab === "queue" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => setNotiTab("queue")}>⏳ Review Queue ({pendingDocs.length})</button>
-                <button className={`btn ${notiTab === "sent" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => { setNotiTab("sent"); fetchSentHistory(); }}>✅ Sent History</button>
+                <button className="btn btn-primary btn-sm" onClick={() => setShowCompose(true)}>✍️ Compose</button>
+                <button className={`btn ${notiTab === "queue" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => setNotiTab("queue")}>⏳ Queue ({pendingDocs.length})</button>
+                <button className={`btn ${notiTab === "sent" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => { setNotiTab("sent"); fetchSentHistory(); }}>✅ History</button>
               </div>
             </div>
             <div className="main-body">
@@ -614,8 +662,7 @@ export default function App() {
                       <div className="review-card-footer">
                         <span className="text-sm text-muted">AI Provider: <strong>{doc.provider}</strong> · Confidence: {((doc.confidenceScore || 0) * 100).toFixed(0)}%</span>
                         <div className="flex gap-2">
-                          <button className="btn btn-success btn-sm" onClick={() => approveDoc(doc.id)}>✓ Approve & Send</button>
-                          <button className="btn btn-danger btn-sm" onClick={() => setShowApproval(doc)}>✕ Reject</button>
+                          <button className="btn btn-warning btn-sm" onClick={() => openReview(doc)}>🔍 Review</button>
                           <button className="btn btn-ghost btn-sm" onClick={() => selectDoc(doc.id)}>View Details</button>
                         </div>
                       </div>
@@ -657,7 +704,7 @@ export default function App() {
                   <div className="form-group">
                     <label className="form-label">Default Provider</label>
                     <select className="form-select" value={uProvider} onChange={e => setUProvider(e.target.value)}>
-                      <option value="ollama">Local AI (Mistral 7B via Ollama)</option>
+                      <option value="ollama">Local AI (Qwen2.5-VL 3B via Ollama)</option>
                       <option value="gemini">Cloud AI (Gemini)</option>
                     </select>
                   </div>
@@ -666,6 +713,29 @@ export default function App() {
                     <span className="text-sm">Ollama Status: <strong>{aiStatus === "online" ? "Connected" : aiStatus === "checking" ? "Checking..." : "Offline"}</strong></span>
                     <button className="btn btn-ghost btn-sm" onClick={checkAi}>Refresh</button>
                   </div>
+                </div>
+              </div>
+
+              <div className="section-card" style={{ maxWidth: 500 }}>
+                <div className="section-card-header"><div className="section-card-title">⚙️ Workflow Configuration</div></div>
+                <div className="section-card-body">
+                  <label className="flex items-center gap-2 mb-3 cursor-pointer text-sm">
+                    <input type="checkbox" checked={aiEnabled} onChange={e => updateSetting("aiEnabled", e.target.checked)} />
+                    <strong>Enable AI Processing</strong>
+                    <span className="text-muted ml-1">(If disabled, only local text heuristics run)</span>
+                  </label>
+                  <label className="flex items-center gap-2 mb-3 cursor-pointer text-sm">
+                    <input type="checkbox" checked={useFallbacks} onChange={e => updateSetting("useFallbacks", e.target.checked)} disabled={!aiEnabled} />
+                    <strong>Use AI Fallbacks</strong>
+                    <span className="text-muted ml-1">(Try Groq/OpenRouter if primary fails)</span>
+                  </label>
+                  <label className="flex items-center gap-2 mb-3 cursor-pointer text-sm">
+                    <input type="checkbox" checked={skipHybridOcr} onChange={e => updateSetting("skipHybridOcr", e.target.checked)} />
+                    <span>
+                      <strong>Skip Hybrid OCR</strong>
+                      <span className="text-muted ml-1">(Bypass Python text extraction and send raw PDF directly to the selected AI's visual engine)</span>
+                    </span>
+                  </label>
                 </div>
               </div>
             </div>
@@ -716,6 +786,9 @@ export default function App() {
             <div className={`progress-step-label ${jobProgress.stage !== "done" && jobProgress.stage !== "error" ? "spinning" : ""}`}>
               {jobProgress.stage === "done" ? "✅" : jobProgress.stage === "error" ? "❌" : "🔔"} {jobProgress.label || "Processing..."}
             </div>
+            {(jobProgress.stage !== "done" && jobProgress.stage !== "error") && (
+              <button className="btn btn-ghost btn-sm text-danger" style={{ padding: "2px 6px", fontSize: 11 }} onClick={cancelJob}>✕ Cancel</button>
+            )}
             {(jobProgress.stage === "done" || jobProgress.stage === "error") && (
               <button className="btn btn-ghost btn-sm" style={{ padding: "2px 6px", fontSize: 11 }} onClick={() => { setJobId(null); setJobProgress(null); }}>✕</button>
             )}
@@ -730,32 +803,25 @@ export default function App() {
         </div>
       )}
 
-      {/* ═══ APPROVAL MODAL ═══ */}
-      {showApproval && (
-        <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) setShowApproval(null); }}>
-          <div className="modal">
-            <div className="modal-header"><div className="modal-title">⚠️ Review & Approve</div><button className="btn btn-ghost btn-sm" onClick={() => setShowApproval(null)}>✕</button></div>
-            <div className="modal-body">
-              <div className="intel-card mb-3">
-                <div className="intel-card-label">Document</div>
-                <div className="intel-card-value">{showApproval.title}</div>
-              </div>
-              <div className="intel-card mb-3">
-                <div className="intel-card-label">Recipients Matched</div>
-                <div className="intel-card-value">{showApproval.recipientCount || 0} users</div>
-              </div>
-              <div className="divider" />
-              <div className="form-group">
-                <label className="form-label">Rejection Reason (optional)</label>
-                <input className="form-input" value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="Reason for rejection (if rejecting)" />
-              </div>
-            </div>
-            <div className="modal-footer">
-              <button className="btn btn-danger" onClick={() => rejectDoc(showApproval.id)}>✕ Reject</button>
-              <button className="btn btn-success" onClick={() => approveDoc(showApproval.id)}>✓ Approve & Send Notifications</button>
-            </div>
-          </div>
-        </div>
+      {/* ═══ REVIEW PANEL (replaces old approval modal) ═══ */}
+      {showReview && (
+        <ReviewPanel
+          tenantId={tenantId}
+          doc={showReview.doc}
+          extraction={showReview.extraction || extraction}
+          recipients={showReview.recipients || recipients}
+          onAction={handleReviewAction}
+          onClose={() => setShowReview(null)}
+        />
+      )}
+
+      {/* ═══ COMPOSE MODAL ═══ */}
+      {showCompose && (
+        <ComposeModal
+          tenantId={tenantId}
+          onClose={() => setShowCompose(false)}
+          onSent={() => { fetchDocs(); fetchSentHistory(); }}
+        />
       )}
 
       {/* ═══ ERROR TOAST ═══ */}

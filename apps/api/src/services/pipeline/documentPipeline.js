@@ -6,7 +6,7 @@ const NotificationLog = require("../../models/NotificationLog");
 const { parsePdf } = require("../parser/pdfParser");
 const { extractStructuredData } = require("../extraction/extractor");
 const { deriveRecipients } = require("../routing/routingEngine");
-const { updateJob } = require("../jobs/jobStore");
+const { updateJob, getJobSignal } = require("../jobs/jobStore");
 
 function sha1(text) {
   return crypto.createHash("sha1").update(text).digest("hex");
@@ -19,12 +19,15 @@ async function processUploadedDocument({
   file,
   provider,
   uploadedBy = "admin",
-  jobId = null
+  jobId = null,
+  workflowSettings = {}
 }) {
   const emit = (stage, label) => { if (jobId) updateJob(jobId, stage, label); };
+  const signal = jobId ? getJobSignal(jobId) : undefined;
 
   emit("parse", "Parsing PDF structure...");
-  const parserResult = await parsePdf(file.path);
+  const skipHybridOcr = workflowSettings.skipHybridOcr === true;
+  const parserResult = await parsePdf(file.path, signal, skipHybridOcr);
   const checksum = sha1(`${file.originalname}:${file.size}:${parserResult.rawText.slice(0, 2000)}`);
 
   const document = await Document.create({
@@ -49,7 +52,8 @@ async function processUploadedDocument({
       filePath: file.path,
       pageCount: parserResult.pageCount,
       provider,
-      structuredData: parserResult.structuredData
+      structuredData: parserResult.structuredData,
+      settings: workflowSettings
     });
 
     emit("routing", "Running intelligent routing engine...");
@@ -117,7 +121,14 @@ async function processUploadedDocument({
       nextAction: "pending_admin_approval"
     };
   } catch (error) {
-    document.status = "failed";
+    if (error.name === "AbortError" || error.message.includes("Cancelled by user")) {
+      console.log(`[documentPipeline] Job ${jobId} was cancelled by user.`);
+      document.status = "failed";
+      // We don't save the document if cancelled before taking action, or we save it as cancelled.
+      // Saving it as failed is fine.
+    } else {
+      document.status = "failed";
+    }
     await document.save();
     throw error;
   }

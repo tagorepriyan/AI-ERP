@@ -1136,8 +1136,16 @@ async function extractWithGeminiFromPdf({ docType, filePath, pageCount }) {
   });
 }
 
-async function extractStructuredData({ docType, rawText, filePath, pageCount, provider, structuredData }) {
+async function extractStructuredData({ docType, rawText, filePath, pageCount, provider, structuredData, settings = {} }) {
   const providerErrors = [];
+
+  // Check if AI processing is disabled via settings
+  if (settings.aiEnabled === false) {
+    console.log(`[extractor] AI processing disabled by settings. Falling back to local heuristics.`);
+    return extractLocalEvents({ docType, rawText, structuredData });
+  }
+
+  const useFallbacks = settings.useFallbacks !== false;
 
   const textProviders = [
     {
@@ -1152,7 +1160,7 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
     },
     {
       name: "groq",
-      enabled: (provider === "gemini" || !provider) && Boolean(env.ai.groq.apiKey),
+      enabled: useFallbacks && (provider === "gemini" || !provider) && Boolean(env.ai.groq.apiKey),
       execute: () =>
         extractWithOpenAICompatibleFromText({
           providerName: "groq",
@@ -1165,7 +1173,7 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
     },
     {
       name: "openrouter",
-      enabled: (provider === "gemini" || !provider) && Boolean(env.ai.openrouter.apiKey),
+      enabled: useFallbacks && (provider === "gemini" || !provider) && Boolean(env.ai.openrouter.apiKey),
       execute: async () => {
         const modelCandidates = [
           env.ai.openrouter.model,

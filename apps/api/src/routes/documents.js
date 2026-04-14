@@ -31,6 +31,11 @@ router.post("/upload", upload.single("file"), async (req, res, next) => {
     const title = req.body.title || req.file.originalname;
     const docType = req.body.docType || "exam_timetable";
     const requestedProvider = req.body.provider || "ollama";
+    
+    let workflowSettings = {};
+    try {
+      if (req.body.settings) workflowSettings = JSON.parse(req.body.settings);
+    } catch(e) {}
 
     // Return jobId immediately so frontend can start polling
     res.status(202).json({ jobId, message: "Processing started" });
@@ -47,6 +52,7 @@ router.post("/upload", upload.single("file"), async (req, res, next) => {
         provider: requestedProvider,
         file: req.file,
         uploadedBy: req.body.uploadedBy || "admin",
+        workflowSettings,
         jobId
       });
 
@@ -150,34 +156,94 @@ router.get("/:id", async (req, res, next) => {
 // ── POST /documents/:id/approve ────────────────────────────────────────────────
 router.post("/:id/approve", async (req, res, next) => {
   try {
-    const { approvedBy = "admin" } = req.body;
+    const {
+      approvedBy = "admin",
+      deliveryMode = "both",
+      priority = "normal",
+      content = "",
+      scheduledAt = null,
+      filters = null  // If admin refined targeting
+    } = req.body;
+
     const doc = await Document.findOne({ _id: req.params.id, tenantId: req.tenantId });
     if (!doc) return res.status(404).json({ error: { message: "Document not found" } });
 
-    doc.status = "published";
+    const now = new Date();
+    const isScheduled = scheduledAt && new Date(scheduledAt) > now;
+
     doc.approvedBy = approvedBy;
-    doc.approvedAt = new Date();
+    doc.approvedAt = now;
+    doc.deliveryMode = deliveryMode;
+    doc.priority = priority;
+    if (content) doc.content = content;
+    if (isScheduled) {
+      doc.status = "scheduled";
+      doc.scheduledAt = new Date(scheduledAt);
+    } else {
+      doc.status = "published";
+    }
+
+    // Save the approved filter snapshot
+    if (filters) {
+      doc.approvedFilters = filters;
+    }
+
     await doc.save();
 
-    // Mark all pending notifications for this doc as delivered
-    const now = new Date();
+    // Update all pending notifications for this doc
+    const updateFields = {
+      approvedBy,
+      approvedAt: now,
+      deliveryMode,
+      priority,
+      notificationType: doc.docType
+    };
+
+    if (content) updateFields.content = content;
+
+    if (isScheduled) {
+      updateFields.status = "scheduled";
+      updateFields.scheduledAt = new Date(scheduledAt);
+    } else {
+      updateFields.status = "delivered";
+      updateFields.sentAt = now;
+      updateFields["channels.inApp.sent"] = true;
+      updateFields["channels.inApp.sentAt"] = now;
+    }
+
     const updateResult = await NotificationLog.updateMany(
       { tenantId: req.tenantId, documentId: doc._id, status: "pending" },
-      {
-        $set: {
-          status: "delivered",
-          approvedBy,
-          approvedAt: now,
-          "channels.inApp.sent": true,
-          "channels.inApp.sentAt": now
-        }
-      }
+      { $set: updateFields }
     );
+
+    // If scheduled, set in-memory timer
+    if (isScheduled) {
+      const delay = new Date(scheduledAt).getTime() - Date.now();
+      setTimeout(async () => {
+        try {
+          await NotificationLog.updateMany(
+            { tenantId: req.tenantId, documentId: doc._id, status: "scheduled" },
+            {
+              $set: {
+                status: "delivered",
+                sentAt: new Date(),
+                "channels.inApp.sent": true,
+                "channels.inApp.sentAt": new Date()
+              }
+            }
+          );
+          await Document.updateOne({ _id: doc._id }, { $set: { status: "published" } });
+          console.log(`[scheduler] Delivered scheduled notifications for doc ${doc._id}`);
+        } catch (e) {
+          console.error("[scheduler] Error:", e.message);
+        }
+      }, Math.max(delay, 1000));
+    }
 
     res.json({
       success: true,
-      document: { id: doc._id, status: doc.status },
-      notificationsDelivered: updateResult.modifiedCount
+      document: { id: doc._id, status: doc.status, scheduledAt: doc.scheduledAt },
+      notificationsUpdated: updateResult.modifiedCount
     });
   } catch (err) {
     next(err);
@@ -197,10 +263,20 @@ router.post("/:id/reject", async (req, res, next) => {
     doc.rejectionReason = reason;
     await doc.save();
 
-    // Clear all pending notification logs
+    // Clear all pending notification logs and log the rejection
     await NotificationLog.updateMany(
-      { tenantId: req.tenantId, documentId: doc._id, status: "pending" },
-      { $set: { status: "skipped" } }
+      { tenantId: req.tenantId, documentId: doc._id, status: { $in: ["pending", "scheduled"] } },
+      {
+        $set: { status: "skipped" },
+        $push: {
+          modifications: {
+            modifiedAt: new Date(),
+            modifiedBy: rejectedBy,
+            action: "rejected",
+            details: reason
+          }
+        }
+      }
     );
 
     res.json({ success: true, document: { id: doc._id, status: doc.status } });
@@ -208,6 +284,7 @@ router.post("/:id/reject", async (req, res, next) => {
     next(err);
   }
 });
+
 
 // ── POST /documents/:id/reprocess ──────────────────────────────────────────────
 router.post("/:id/reprocess", async (req, res, next) => {

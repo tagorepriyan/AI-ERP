@@ -27,7 +27,7 @@ function parseHybridOutput(stdout) {
   }
 }
 
-async function runPythonHybridParser(filePath) {
+async function runPythonHybridParser(filePath, signal) {
   const pyScriptPath = path.join(__dirname, "../../../scripts/hybrid_ocr.py");
   const candidates = [
     process.env.PYTHON_EXECUTABLE
@@ -43,7 +43,8 @@ async function runPythonHybridParser(filePath) {
     try {
       const { stdout } = await execFilePromise(candidate.command, candidate.args, {
         windowsHide: true,
-        maxBuffer: 10 * 1024 * 1024
+        maxBuffer: 10 * 1024 * 1024,
+        signal
       });
       return parseHybridOutput(stdout);
     } catch (error) {
@@ -54,9 +55,14 @@ async function runPythonHybridParser(filePath) {
   throw lastError || new Error("Unable to execute Python hybrid OCR script");
 }
 
-async function parsePdf(filePath) {
+async function parsePdf(filePath, signal, skipHybridOcr = false) {
+  if (skipHybridOcr) {
+    console.log(`[pdfParser] Skipping hybrid OCR as requested. Falling back to pure Node pdf-parse.`);
+    return await fallbackParse(filePath);
+  }
+
   try {
-    const result = await runPythonHybridParser(filePath);
+    const result = await runPythonHybridParser(filePath, signal);
 
     if (result?.error) {
       console.warn(`[Python OCR Error] ${result.error}. Falling back to node pdf-parse.`);
