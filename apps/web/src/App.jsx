@@ -66,6 +66,7 @@ export default function App() {
     catch { return {}; }
   });
   const skipHybridOcr = settings.skipHybridOcr || false;
+  const bypassPdfParse = settings.bypassPdfParse || false;
   const aiEnabled = settings.aiEnabled !== false;
   const useFallbacks = settings.useFallbacks !== false;
 
@@ -734,6 +735,13 @@ export default function App() {
                     <span>
                       <strong>Skip Hybrid OCR</strong>
                       <span className="text-muted ml-1">(Bypass Python text extraction and send raw PDF directly to the selected AI's visual engine)</span>
+                    </span>
+                  </label>
+                  <label className="flex items-center gap-2 mb-3 cursor-pointer text-sm">
+                    <input type="checkbox" checked={bypassPdfParse} onChange={e => updateSetting("bypassPdfParse", e.target.checked)} />
+                    <span>
+                      <strong>Bypass PDF-Parse</strong>
+                      <span className="text-muted ml-1">(Do not extract text with Node whatsoever. Send raw document purely to Local AI Vision/Gemini.)</span>
                     </span>
                   </label>
                 </div>

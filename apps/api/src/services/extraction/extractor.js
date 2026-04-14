@@ -978,7 +978,7 @@ async function extractWithOllamaFromText({ docType, rawText, model }) {
       },
       signal: controller.signal,
       body: JSON.stringify({
-        model: model || "mistral",
+        model: model || "qwen2.5vl:3b",
         format: "json",
         stream: false,
         options: {
@@ -1136,6 +1136,50 @@ async function extractWithGeminiFromPdf({ docType, filePath, pageCount }) {
   });
 }
 
+async function extractWithOllamaFromPdf({ docType, filePath, pageCount }) {
+  const fileBuffer = await fs.readFile(filePath);
+  const base64Image = fileBuffer.toString("base64");
+
+  const prompt = buildExtractionPrompt(docType);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 300000);
+
+  try {
+    const response = await fetch("http://127.0.0.1:11434/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: "qwen2.5vl:3b",
+        format: "json",
+        stream: false,
+        options: { temperature: 0.1 },
+        prompt: `${prompt}\n\nReturn only strict JSON.`,
+        images: [base64Image]
+      })
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Ollama Vision request failed with status ${response.status}: ${errorBody.slice(0, 500)}`);
+    }
+
+    const payload = await response.json();
+    const content = payload?.response;
+    const parsed = parseModelOutputFromText(content, docType);
+
+    return buildResult({
+      provider: "ollama",
+      model: "qwen2.5vl:3b",
+      events: parsed.events,
+      structured: parsed.structured,
+      emptyWarning: "Ollama (Qwen-VL) extracted no events from the provided document"
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function extractStructuredData({ docType, rawText, filePath, pageCount, provider, structuredData, settings = {} }) {
   const providerErrors = [];
 
@@ -1151,7 +1195,7 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
     {
       name: "ollama",
       enabled: provider === "ollama",
-      execute: () => extractWithOllamaFromText({ docType, rawText, model: "mistral" })
+      execute: () => extractWithOllamaFromText({ docType, rawText, model: "qwen2.5vl:3b" })
     },
     {
       name: "gemini",
@@ -1242,8 +1286,12 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
         name: "gemini",
         enabled: (provider === "gemini" || !provider) && Boolean(env.ai.gemini.apiKey),
         execute: () => extractWithGeminiFromPdf({ docType, filePath, pageCount })
+      },
+      {
+        name: "ollama",
+        enabled: provider === "ollama",
+        execute: () => extractWithOllamaFromPdf({ docType, filePath, pageCount })
       }
-      // Note: Groq/OpenRouter cannot process PDF binary directly
     ]
       .filter((p) => p.enabled)
       .slice(0, 1);

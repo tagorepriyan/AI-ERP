@@ -55,7 +55,12 @@ async function runPythonHybridParser(filePath, signal) {
   throw lastError || new Error("Unable to execute Python hybrid OCR script");
 }
 
-async function parsePdf(filePath, signal, skipHybridOcr = false) {
+async function parsePdf(filePath, signal, skipHybridOcr = false, bypassPdfParse = false) {
+  if (bypassPdfParse) {
+    console.log(`[pdfParser] Bypassing EVERYTHING as requested. Passing raw file path downstream.`);
+    return { rawText: "", pageCount: 0 };
+  }
+
   if (skipHybridOcr) {
     console.log(`[pdfParser] Skipping hybrid OCR as requested. Falling back to pure Node pdf-parse.`);
     return await fallbackParse(filePath);
