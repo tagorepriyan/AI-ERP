@@ -1,8 +1,10 @@
 const express = require("express");
 const cors = require("cors");
+const compression = require("compression");
 
 const tenantContext = require("./middleware/tenantContext");
 const errorHandler = require("./middleware/errorHandler");
+const { noStoreCache, publicCache } = require("./middleware/cacheHeaders");
 const healthRoutes = require("./routes/health");
 const documentRoutes = require("./routes/documents");
 const userRoutes = require("./routes/users");
@@ -15,10 +17,12 @@ const { getJob, cancelJob } = require("./services/jobs/jobStore");
 const app = express();
 
 app.use(cors());
+app.use(compression({ threshold: 1024 }));
+app.use(noStoreCache);
 app.use(express.json({ limit: "2mb" }));
 app.use(tenantContext);
 
-app.use("/health", healthRoutes);
+app.use("/health", publicCache(60), healthRoutes);
 app.use("/documents", documentRoutes);
 app.use("/users", userRoutes);
 app.use("/notifications", notificationRoutes);

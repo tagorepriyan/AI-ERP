@@ -413,6 +413,54 @@ a { text-decoration: none; color: inherit; }
   padding: 20px 24px;
 }
 
+.app-loading {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.detail-loading {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.skeleton-block {
+  border-radius: 10px;
+  background: linear-gradient(90deg, #eef2ff 20%, #f8fafc 50%, #eef2ff 80%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s linear infinite;
+}
+
+.skeleton-title { height: 28px; width: 55%; }
+.skeleton-subtitle { height: 18px; width: 40%; }
+.skeleton-card { height: 92px; }
+.skeleton-panel { height: 220px; width: 100%; }
+
+.inline-loading {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+@keyframes skeleton-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
 /* ============================================================
    DASHBOARD
    ============================================================ */
@@ -1395,4 +1443,321 @@ textarea.form-input {
 /* Danger light background */
 :root {
   --danger-light: #fef2f2;
+}
+
+/* ============================================================
+   RESPONSIVE BREAKPOINTS
+   ============================================================ */
+@media (max-width: 1200px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .detail-title-row,
+  .review-card-header,
+  .review-card-footer,
+  .approval-banner,
+  .section-card-header,
+  .main-header {
+    gap: 12px;
+  }
+
+  .approval-banner,
+  .main-header,
+  .detail-title-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .modal {
+    width: min(560px, calc(100vw - 32px));
+  }
+}
+
+@media (max-width: 960px) {
+  .app-shell {
+    height: auto;
+    min-height: 100vh;
+  }
+
+  .context-panel {
+    width: 280px;
+  }
+
+  .main-body {
+    padding: 18px 20px;
+  }
+
+  .detail-header,
+  .detail-body {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  .intelligence-grid,
+  .skeleton-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .modal-footer,
+  .approval-banner-actions,
+  .review-card-footer {
+    flex-wrap: wrap;
+  }
+
+  .floating-progress {
+    width: 300px;
+  }
+}
+
+@media (max-width: 768px) {
+  html, body, #root {
+    height: auto;
+    min-height: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .app-shell {
+    flex-direction: column;
+    min-height: 100vh;
+    height: auto;
+    overflow: visible;
+  }
+
+  .nav-rail {
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    position: sticky;
+    top: 0;
+  }
+
+  .nav-logo,
+  .nav-spacer,
+  .nav-ai-status,
+  .nav-sysmon {
+    flex-shrink: 0;
+  }
+
+  .nav-logo {
+    margin-bottom: 0;
+    padding: 8px 10px;
+  }
+
+  .nav-item {
+    flex-shrink: 0;
+  }
+
+  .nav-sysmon .sysmon-popout {
+    display: none;
+  }
+
+  .context-panel {
+    width: 100%;
+    max-height: 280px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .main-content {
+    min-height: 0;
+  }
+
+  .main-header {
+    padding: 14px 16px;
+  }
+
+  .main-header .flex,
+  .main-header > div:last-child,
+  .main-header > .flex {
+    flex-wrap: wrap;
+  }
+
+  .main-body {
+    padding: 16px;
+  }
+
+  .stats-grid,
+  .dashboard-grid,
+  .intelligence-grid,
+  .skeleton-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .section-card-header,
+  .approval-item,
+  .review-card-header,
+  .review-card-footer,
+  .approval-banner,
+  .detail-title-row,
+  .modal-header,
+  .modal-footer,
+  .te-preview-bar,
+  .floating-progress-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .section-card-header,
+  .section-card-body,
+  .detail-header,
+  .detail-body,
+  .modal-header,
+  .modal-body,
+  .modal-footer {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .detail-tabs {
+    margin-left: -20px;
+    margin-right: -20px;
+    padding: 0 20px;
+  }
+
+  .approval-banner-actions,
+  .modal-footer,
+  .review-card-footer,
+  .te-preview-bar,
+  .chip-group,
+  .flex.gap-2,
+  .flex.gap-3,
+  .flex.gap-4 {
+    flex-wrap: wrap;
+  }
+
+  .approval-banner-text strong,
+  .approval-banner-text span {
+    word-break: break-word;
+  }
+
+  .detail-title {
+    font-size: 1.05rem;
+  }
+
+  .detail-subtitle {
+    line-height: 1.4;
+  }
+
+  .modal {
+    width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px);
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  }
+
+  .modal-overlay {
+    align-items: flex-end;
+    padding: 8px;
+  }
+
+  .floating-progress {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    width: auto;
+  }
+
+  .te-header,
+  .te-preview-bar {
+    gap: 8px;
+  }
+
+  .chip {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 560px) {
+  .login-card {
+    width: calc(100vw - 24px);
+    padding: 28px 20px;
+  }
+
+  .pin-inputs {
+    gap: 8px;
+  }
+
+  .pin-input {
+    width: 48px;
+    height: 48px;
+    font-size: 1.2rem;
+  }
+
+  .main-header h2 {
+    font-size: 1rem;
+  }
+
+  .main-header p,
+  .detail-subtitle,
+  .stat-card-label,
+  .approval-meta,
+  .review-card-meta {
+    font-size: 11px;
+  }
+
+  .stat-card {
+    padding: 16px;
+  }
+
+  .stat-card-value {
+    font-size: 1.6rem;
+  }
+
+  .section-card-header,
+  .section-card-body,
+  .detail-header,
+  .detail-body,
+  .modal-header,
+  .modal-body,
+  .modal-footer {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .approval-item,
+  .review-card,
+  .routing-step,
+  .intel-card {
+    padding: 14px;
+  }
+
+  .data-table {
+    font-size: 12px;
+  }
+
+  .data-table th,
+  .data-table td {
+    padding: 8px 10px;
+  }
+
+  .data-table-wrap {
+    border-radius: var(--radius-md);
+  }
+
+  .tag {
+    font-size: 11px;
+    padding: 3px 8px;
+  }
+
+  .modal-title {
+    font-size: 0.95rem;
+  }
+
+  .wizard-steps {
+    margin-bottom: 16px;
+  }
+
+  .floating-progress {
+    padding: 12px 14px;
+  }
 }
