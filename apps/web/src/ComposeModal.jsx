@@ -3,8 +3,12 @@ import TargetingEditor from "./TargetingEditor";
 
 const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
 
-export default function ComposeModal({ tenantId, onClose, onSent }) {
-  const headers = { "x-tenant-id": tenantId, "Content-Type": "application/json" };
+export default function ComposeModal({ tenantId, authToken, onClose, onSent }) {
+  const headers = {
+    "x-tenant-id": tenantId,
+    ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    "Content-Type": "application/json"
+  };
 
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");

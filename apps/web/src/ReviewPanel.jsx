@@ -3,8 +3,12 @@ import TargetingEditor from "./TargetingEditor";
 
 const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
 
-export default function ReviewPanel({ tenantId, doc, extraction, recipients, initialTab = "targeting", onAction, onClose }) {
-  const headers = { "x-tenant-id": tenantId, "Content-Type": "application/json" };
+export default function ReviewPanel({ tenantId, authToken, doc, extraction, recipients, initialTab = "targeting", onAction, onClose }) {
+  const headers = {
+    "x-tenant-id": tenantId,
+    ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    "Content-Type": "application/json"
+  };
   const structured = extraction?.structured || {};
 
   const [deliveryMode, setDeliveryMode] = useState("both");

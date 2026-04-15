@@ -7,8 +7,12 @@ const ROLES = ["student", "faculty", "hod"];
 
 const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
 
-export default function TargetingEditor({ tenantId, initialFilters, onFiltersChange, onPreviewUpdate }) {
-  const headers = { "x-tenant-id": tenantId, "Content-Type": "application/json" };
+export default function TargetingEditor({ tenantId, authToken, initialFilters, onFiltersChange, onPreviewUpdate }) {
+  const headers = {
+    "x-tenant-id": tenantId,
+    ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    "Content-Type": "application/json"
+  };
 
   const [filters, setFilters] = useState({
     departments: [],

@@ -1,11 +1,43 @@
 import { useState, useRef } from "react";
 
-const CORRECT_PIN = "1111";
+const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
 
 export default function LoginPage({ onLogin }) {
   const [digits, setDigits] = useState(["", "", "", ""]);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const refs = [useRef(), useRef(), useRef(), useRef()];
+
+  async function submitPin(pin) {
+    if (pin.length < 4) {
+      setError("Enter all 4 digits");
+      return;
+    }
+
+    setError("");
+    setLoading(true);
+    try {
+      const r = await fetch(`${API}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: "admin", pin })
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        throw new Error(d?.error?.message || "Invalid credentials");
+      }
+
+      sessionStorage.setItem("notify_auth", "1");
+      sessionStorage.setItem("notify_token", d.token);
+      onLogin?.(d);
+    } catch (err) {
+      setError(err.message || "Login failed");
+      setDigits(["", "", "", ""]);
+      refs[0].current?.focus();
+    } finally {
+      setLoading(false);
+    }
+  }
 
   function handleChange(idx, val) {
     if (val.length > 1) val = val.slice(-1);
@@ -19,15 +51,7 @@ export default function LoginPage({ onLogin }) {
     if (val && idx < 3) refs[idx + 1].current?.focus();
 
     if (next.every(d => d !== "")) {
-      const pin = next.join("");
-      if (pin === CORRECT_PIN) {
-        sessionStorage.setItem("notify_auth", "1");
-        onLogin();
-      } else {
-        setError("Incorrect PIN. Try again.");
-        setDigits(["", "", "", ""]);
-        setTimeout(() => refs[0].current?.focus(), 200);
-      }
+      submitPin(next.join(""));
     }
   }
 
@@ -65,14 +89,10 @@ export default function LoginPage({ onLogin }) {
 
         <button
           className="btn btn-primary btn-full btn-lg"
-          onClick={() => {
-            const pin = digits.join("");
-            if (pin.length < 4) { setError("Enter all 4 digits"); return; }
-            if (pin === CORRECT_PIN) { sessionStorage.setItem("notify_auth", "1"); onLogin(); }
-            else { setError("Incorrect PIN"); setDigits(["","","",""]); refs[0].current?.focus(); }
-          }}
+          disabled={loading}
+          onClick={() => submitPin(digits.join(""))}
         >
-          Unlock Dashboard
+          {loading ? "Signing in..." : "Unlock Dashboard"}
         </button>
       </div>
     </div>
