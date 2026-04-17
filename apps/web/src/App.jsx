@@ -65,11 +65,7 @@ export default function App() {
 
   const [authed, setAuthed] = useState(() => sessionStorage.getItem("notify_auth") === "1");
   const [tenantId] = useState("default-campus");
-  const [token, setToken] = useState(() => sessionStorage.getItem("notify_token") || "");
-  const headers = useMemo(() => ({
-    "x-tenant-id": tenantId,
-    ...(token ? { Authorization: `Bearer ${token}` } : {})
-  }), [tenantId, token]);
+  const headers = useMemo(() => ({ "x-tenant-id": tenantId }), [tenantId]);
   const jsonHeaders = useMemo(() => ({ ...headers, "Content-Type": "application/json" }), [headers]);
 
   // ── Data state ──────────────────────────────────────────────────────────────
@@ -577,11 +573,15 @@ export default function App() {
   if (!authed) {
     return (
       <Suspense fallback={<div className="app-loading">Loading login...</div>}>
+<<<<<<< HEAD
         <LoginPage onLogin={(payload) => {
           setToken(payload?.token || sessionStorage.getItem("notify_token") || "");
           setAuthed(true);
           navigate("/dashboard", { replace: true });
         }} />
+=======
+        <LoginPage onLogin={() => setAuthed(true)} />
+>>>>>>> parent of 79c88fa (lwt auth)
       </Suspense>
     );
   }
@@ -662,7 +662,11 @@ export default function App() {
           <div className={`ai-dot ${aiStatus}`} />
           <span className="ai-label">{aiStatus === "online" ? "AI ON" : aiStatus === "checking" ? "..." : "OFF"}</span>
         </div>
+<<<<<<< HEAD
         <button className="nav-item" onClick={() => { sessionStorage.removeItem("notify_auth"); sessionStorage.removeItem("notify_token"); setToken(""); setAuthed(false); navigate("/login", { replace: true }); }} title="Logout">🚪</button>
+=======
+        <button className="nav-item" onClick={() => { sessionStorage.removeItem("notify_auth"); setAuthed(false); }} title="Logout">🚪</button>
+>>>>>>> parent of 79c88fa (lwt auth)
       </nav>
 
       {/* ── Context Panel ─────────────────────────────────────── */}
@@ -1219,7 +1223,6 @@ export default function App() {
         <Suspense fallback={<div className="modal-overlay"><div className="modal">Loading review panel...</div></div>}>
           <ReviewPanel
             tenantId={tenantId}
-            authToken={token}
             doc={showReview.doc}
             extraction={showReview.extraction || extraction}
             recipients={showReview.recipients || recipients}
@@ -1242,8 +1245,12 @@ export default function App() {
         <Suspense fallback={<div className="modal-overlay"><div className="modal">Loading composer...</div></div>}>
           <ComposeModal
             tenantId={tenantId}
+<<<<<<< HEAD
             authToken={token}
             onClose={closeCompose}
+=======
+            onClose={() => setShowCompose(false)}
+>>>>>>> parent of 79c88fa (lwt auth)
             onSent={() => { fetchDocs(); fetchScheduledNotifications(); fetchNotificationHistory(historyStatusFilter); }}
           />
         </Suspense>

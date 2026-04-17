@@ -3,10 +3,8 @@ const cors = require("cors");
 const compression = require("compression");
 
 const tenantContext = require("./middleware/tenantContext");
-const { requireAuth } = require("./middleware/auth");
 const errorHandler = require("./middleware/errorHandler");
 const { noStoreCache, publicCache } = require("./middleware/cacheHeaders");
-const authRoutes = require("./routes/auth");
 const healthRoutes = require("./routes/health");
 const documentRoutes = require("./routes/documents");
 const userRoutes = require("./routes/users");
@@ -24,24 +22,23 @@ app.use(noStoreCache);
 app.use(express.json({ limit: "2mb" }));
 app.use(tenantContext);
 
-app.use("/auth", authRoutes);
 app.use("/health", publicCache(60), healthRoutes);
-app.use("/documents", requireAuth, documentRoutes);
-app.use("/users", requireAuth, userRoutes);
-app.use("/notifications", requireAuth, notificationRoutes);
-app.use("/students", requireAuth, studentRoutes);
-app.use("/system", requireAuth, systemRoutes);
-app.use("/targeting", requireAuth, targetingRoutes);
+app.use("/documents", documentRoutes);
+app.use("/users", userRoutes);
+app.use("/notifications", notificationRoutes);
+app.use("/students", studentRoutes);
+app.use("/system", systemRoutes);
+app.use("/targeting", targetingRoutes);
 
 // ── Real-time job progress polling endpoint ──────────────────────────────────
-app.get("/jobs/:jobId", requireAuth, tenantContext, (req, res) => {
+app.get("/jobs/:jobId", tenantContext, (req, res) => {
   const job = getJob(req.params.jobId);
   if (!job) return res.status(404).json({ error: "Job not found" });
   res.json(job);
 });
 
 // ── Cancel an active job ─────────────────────────────────────────────────────
-app.post("/jobs/:jobId/cancel", requireAuth, tenantContext, (req, res) => {
+app.post("/jobs/:jobId/cancel", tenantContext, (req, res) => {
   const cancelled = cancelJob(req.params.jobId);
   if (cancelled) {
     res.json({ success: true, message: "Job cancelled successfully" });

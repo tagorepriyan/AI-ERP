@@ -1,13 +1,13 @@
 import { useState, useRef } from "react";
 
-const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
+const CORRECT_PIN = "1111";
 
 export default function LoginPage({ onLogin }) {
   const [digits, setDigits] = useState(["", "", "", ""]);
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
   const refs = [useRef(), useRef(), useRef(), useRef()];
 
+<<<<<<< HEAD
   async function submitPin(pin) {
     if (pin.length < 4) {
       setError("Enter all 4 digits");
@@ -44,6 +44,8 @@ export default function LoginPage({ onLogin }) {
     }
   }
 
+=======
+>>>>>>> parent of 79c88fa (lwt auth)
   function handleChange(idx, val) {
     if (val.length > 1) val = val.slice(-1);
     if (val && !/^\d$/.test(val)) return;
@@ -56,7 +58,15 @@ export default function LoginPage({ onLogin }) {
     if (val && idx < 3) refs[idx + 1].current?.focus();
 
     if (next.every(d => d !== "")) {
-      submitPin(next.join(""));
+      const pin = next.join("");
+      if (pin === CORRECT_PIN) {
+        sessionStorage.setItem("notify_auth", "1");
+        onLogin();
+      } else {
+        setError("Incorrect PIN. Try again.");
+        setDigits(["", "", "", ""]);
+        setTimeout(() => refs[0].current?.focus(), 200);
+      }
     }
   }
 
@@ -94,10 +104,14 @@ export default function LoginPage({ onLogin }) {
 
         <button
           className="btn btn-primary btn-full btn-lg"
-          disabled={loading}
-          onClick={() => submitPin(digits.join(""))}
+          onClick={() => {
+            const pin = digits.join("");
+            if (pin.length < 4) { setError("Enter all 4 digits"); return; }
+            if (pin === CORRECT_PIN) { sessionStorage.setItem("notify_auth", "1"); onLogin(); }
+            else { setError("Incorrect PIN"); setDigits(["","","",""]); refs[0].current?.focus(); }
+          }}
         >
-          {loading ? "Signing in..." : "Unlock Dashboard"}
+          Unlock Dashboard
         </button>
       </div>
     </div>

@@ -1,34 +1,28 @@
 # AI-ERP
 
-AI-ERP is an AI-powered academic communication platform that ingests campus documents, extracts structured intent and audience conditions, routes notifications to matched users/students, and provides an admin review and scheduling workflow.
+AI-powered ERP focused on academic document intelligence.
 
-## Project Status
+## Current Implementation Status
 
-- Frontend + backend integration is implemented.
-- AI extraction/routing flow is implemented with provider fallback support.
-- Core CRUD and approval/rejection/scheduling workflows are implemented.
-- Responsive UI for desktop/tablet/mobile is implemented.
-- Demo-ready with local API + web run.
+Phase 1 foundation is implemented with a tenant-aware Node.js API for document ingestion and extraction bootstrap.
 
 ## Monorepo Structure
 
-- `apps/api` - Express + MongoDB API
-- `apps/web` - React + Vite admin dashboard
-- `packages/schemas` - shared schema contracts
+- apps/api: Express + MongoDB service
+- apps/web: frontend placeholder
+- packages/schemas: shared JSON schema contracts
 
-## Key Features
+## Quick Start
 
-### End-to-End Flow
+1. Copy `.env.example` to `.env`
+2. Ensure MongoDB is running locally
+3. Install dependencies:
 
-1. Upload PDF (or compose custom notification).
-2. Extract structured information via AI pipeline.
-3. Build recipient list with targeting rules.
-4. Admin review/approve/reject.
-5. Deliver immediately or schedule delivery.
-6. Track queue/history/status and per-recipient logs.
+   npm install
 
-### Frontend (UI/UX)
+4. Start API:
 
+<<<<<<< HEAD
 - Dashboard with document listing, status chips, search, and quick actions
 - Multi-step upload wizard with job progress polling and cancel
 - Document detail tabs (intelligence, schedule, routing, recipients, raw)
@@ -58,15 +52,20 @@ Query params:
 - `/notifications?tab=queue|history&status=delivered|scheduled|pending|failed|skipped|all`
 
 ### Backend (API)
+=======
+   npm run dev:api
 
-- Tenant-aware request context (`x-tenant-id`)
-- REST routes for documents, notifications, students, users, targeting, jobs, health, and system metrics
-- Async job store for upload processing progress/cancellation
-- Centralized error middleware and structured validation/error responses
-- Compression + conservative cache policy for dynamic endpoints
+## API Endpoints
+>>>>>>> parent of 79c88fa (lwt auth)
 
-### AI Integration
+- GET /health
+- POST /documents/upload (multipart form-data with `file`, optional `title`, optional `docType`)
+- GET /documents
+- GET /documents/:id
 
+## Notes
+
+<<<<<<< HEAD
 - Input -> extraction -> routing -> output workflow implemented
 - Provider ordering/fallback via environment configuration
 - Configurable workflow toggles (AI on/off, OCR behavior, fallback usage)
@@ -215,3 +214,8 @@ Start web app (new terminal):
 - Multi-tenant behavior relies on `x-tenant-id`; default tenant fallback is available.
 - Scheduled notification reconciliation runs on server startup + interval.
 - Dist assets under `apps/web/dist` are build outputs and may change frequently.
+=======
+- Current extractor is a deterministic stub to validate end-to-end flow.
+- Gemini/API extraction integration is the next implementation step.
+- Documents with low confidence are marked as `review_required`.
+>>>>>>> parent of 79c88fa (lwt auth)

@@ -41,12 +41,6 @@ const env = {
   mongodbUri: process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/ai_erp",
   uploadDir: process.env.UPLOAD_DIR || "apps/api/uploads",
   defaultTenantId: process.env.DEFAULT_TENANT_ID || "default-campus",
-  auth: {
-    jwtSecret: process.env.JWT_SECRET || "dev-jwt-secret-change-me",
-    jwtExpiresIn: process.env.JWT_EXPIRES_IN || "8h",
-    adminUser: process.env.DEMO_ADMIN_USER || "admin",
-    adminPin: process.env.DEMO_ADMIN_PIN || "1111"
-  },
   ai: {
     timeoutMs: Number(process.env.AI_TIMEOUT_MS || 30000),
     providerOrder: parseProviderOrder(process.env.AI_PROVIDER_ORDER),
