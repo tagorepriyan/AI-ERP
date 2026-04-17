@@ -331,6 +331,9 @@ export default function App() {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API}/documents/upload`);
     xhr.setRequestHeader("x-tenant-id", tenantId);
+    if (authToken) {
+      xhr.setRequestHeader("Authorization", `Bearer ${authToken}`);
+    }
 
     // Track upload progress natively BEFORE the backend processing even starts
     xhr.upload.onprogress = (e) => {

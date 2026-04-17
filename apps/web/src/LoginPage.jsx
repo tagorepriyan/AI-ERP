@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef } from "react";
 
 const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
 
@@ -7,11 +7,6 @@ export default function LoginPage({ onLogin }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const refs = [useRef(), useRef(), useRef(), useRef()];
-
-  // Debug: Log API URL on first load (helps troubleshoot Netlify deployment issues)
-  useEffect(() => {
-    console.log("[LoginPage] API endpoint:", API);
-  }, []);
 
   async function submitPin(pin) {
     if (pin.length < 4) {
@@ -22,7 +17,6 @@ export default function LoginPage({ onLogin }) {
     setError("");
     setLoading(true);
     try {
-      console.log("[LoginPage] Attempting login with PIN, API URL:", API);
       const r = await fetch(`${API}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -37,16 +31,12 @@ export default function LoginPage({ onLogin }) {
       sessionStorage.setItem("notify_token", d.token);
       onLogin?.(d);
     } catch (err) {
-      const errorMsg = err.message || "Login failed";
-      console.error("[LoginPage] Login error:", errorMsg, "API:", API);
-      
-      // Provide helpful error messages for common issues
-      if (err.message.includes("Failed to fetch")) {
-        setError("Cannot reach backend API. Check if VITE_API_BASE_URL is set correctly in your deployment.");
+      const msg = err?.message || "Login failed";
+      if (msg.includes("Failed to fetch") || msg.includes("ERR_CONNECTION_REFUSED")) {
+        setError("Cannot reach API at " + API + ". Start the backend (npm run dev:api) and try again.");
       } else {
-        setError(errorMsg);
+        setError(msg);
       }
-      
       setDigits(["", "", "", ""]);
       refs[0].current?.focus();
     } finally {
