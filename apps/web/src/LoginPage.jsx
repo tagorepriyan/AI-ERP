@@ -7,7 +7,6 @@ export default function LoginPage({ onLogin }) {
   const [error, setError] = useState("");
   const refs = [useRef(), useRef(), useRef(), useRef()];
 
-<<<<<<< HEAD
   async function submitPin(pin) {
     if (pin.length < 4) {
       setError("Enter all 4 digits");
@@ -44,8 +43,6 @@ export default function LoginPage({ onLogin }) {
     }
   }
 
-=======
->>>>>>> parent of 79c88fa (lwt auth)
   function handleChange(idx, val) {
     if (val.length > 1) val = val.slice(-1);
     if (val && !/^\d$/.test(val)) return;

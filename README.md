@@ -22,7 +22,6 @@ Phase 1 foundation is implemented with a tenant-aware Node.js API for document i
 
 4. Start API:
 
-<<<<<<< HEAD
 - Dashboard with document listing, status chips, search, and quick actions
 - Multi-step upload wizard with job progress polling and cancel
 - Document detail tabs (intelligence, schedule, routing, recipients, raw)
@@ -52,11 +51,6 @@ Query params:
 - `/notifications?tab=queue|history&status=delivered|scheduled|pending|failed|skipped|all`
 
 ### Backend (API)
-=======
-   npm run dev:api
-
-## API Endpoints
->>>>>>> parent of 79c88fa (lwt auth)
 
 - GET /health
 - POST /documents/upload (multipart form-data with `file`, optional `title`, optional `docType`)
@@ -65,7 +59,6 @@ Query params:
 
 ## Notes
 
-<<<<<<< HEAD
 - Input -> extraction -> routing -> output workflow implemented
 - Provider ordering/fallback via environment configuration
 - Configurable workflow toggles (AI on/off, OCR behavior, fallback usage)
@@ -214,8 +207,3 @@ Start web app (new terminal):
 - Multi-tenant behavior relies on `x-tenant-id`; default tenant fallback is available.
 - Scheduled notification reconciliation runs on server startup + interval.
 - Dist assets under `apps/web/dist` are build outputs and may change frequently.
-=======
-- Current extractor is a deterministic stub to validate end-to-end flow.
-- Gemini/API extraction integration is the next implementation step.
-- Documents with low confidence are marked as `review_required`.
->>>>>>> parent of 79c88fa (lwt auth)
