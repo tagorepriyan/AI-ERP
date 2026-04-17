@@ -3,7 +3,7 @@ import TargetingEditor from "./TargetingEditor";
 
 const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
 
-export default function ReviewPanel({ tenantId, doc, extraction, recipients, initialTab = "targeting", onAction, onClose }) {
+export default function ReviewPanel({ tenantId, doc, extraction, recipients, onAction, onClose }) {
   const headers = { "x-tenant-id": tenantId, "Content-Type": "application/json" };
   const structured = extraction?.structured || {};
 
@@ -15,11 +15,7 @@ export default function ReviewPanel({ tenantId, doc, extraction, recipients, ini
   const [previewCount, setPreviewCount] = useState(recipients?.length || 0);
   const [rejectReason, setRejectReason] = useState("");
   const [processing, setProcessing] = useState(false);
-  const [tab, setTab] = useState(initialTab);
-
-  useEffect(() => {
-    setTab(initialTab || "targeting");
-  }, [initialTab]);
+  const [tab, setTab] = useState("targeting");
 
   // Build initial filters from AI extraction
   useEffect(() => {

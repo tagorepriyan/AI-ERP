@@ -1,9 +1,16 @@
+<<<<<<< HEAD
 import { useEffect, useMemo, useState, useCallback, useRef, lazy, Suspense } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 const LoginPage = lazy(() => import("./LoginPage"));
 const ReviewPanel = lazy(() => import("./ReviewPanel"));
 const ComposeModal = lazy(() => import("./ComposeModal"));
+=======
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import LoginPage from "./LoginPage";
+import ReviewPanel from "./ReviewPanel";
+import ComposeModal from "./ComposeModal";
+>>>>>>> parent of 60d56c6 (....)
 
 const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
 const APP_SECTIONS = ["dashboard", "documents", "students", "notifications", "settings"];
@@ -15,20 +22,6 @@ function fmtDate(v) {
   if (!v) return "-";
   const d = new Date(v);
   return isNaN(d.getTime()) ? v : d.toLocaleDateString();
-}
-
-function fmtDateTime(v) {
-  if (!v) return "-";
-  const d = new Date(v);
-  return isNaN(d.getTime()) ? v : d.toLocaleString();
-}
-
-function getNotificationEventTime(notification) {
-  return notification?.sentAt || notification?.scheduledAt || notification?.approvedAt || notification?.updatedAt || notification?.createdAt;
-}
-
-function formatNotificationStatus(status) {
-  return (status || "-").replace(/_/g, " ");
 }
 
 function fmtTime(sec) {
@@ -74,15 +67,15 @@ export default function App() {
   const [selectedDocId, setSelectedDocId] = useState(null);
   const [selectedDoc, setSelectedDoc] = useState(null);
   const [recipients, setRecipients] = useState([]);
+<<<<<<< HEAD
   const [loadingDocDetail, setLoadingDocDetail] = useState(false);
   const [loadingRecipients, setLoadingRecipients] = useState(false);
   const [recipientsLoadedDocId, setRecipientsLoadedDocId] = useState(null);
   const [docSearch, setDocSearch] = useState("");
+=======
+  const [detailTab, setDetailTab] = useState("intelligence");
+>>>>>>> parent of 60d56c6 (....)
   const [error, setError] = useState("");
-  const [showEditDoc, setShowEditDoc] = useState(false);
-  const [editDocTitle, setEditDocTitle] = useState("");
-  const [editDocType, setEditDocType] = useState("circular");
-  const [savingDoc, setSavingDoc] = useState(false);
 
   // Upload wizard
   const [showUpload, setShowUpload] = useState(false);
@@ -105,7 +98,11 @@ export default function App() {
 
   // Notification history
   const [sentHistory, setSentHistory] = useState([]);
+<<<<<<< HEAD
   const [scheduledNotifications, setScheduledNotifications] = useState([]);
+=======
+  const [notiTab, setNotiTab] = useState("queue");
+>>>>>>> parent of 60d56c6 (....)
 
   // CSV import
   const csvRef = useRef();
@@ -176,44 +173,26 @@ export default function App() {
   }, [headers]);
 
   const fetchDocDetail = useCallback(async (id) => {
-    setLoadingDocDetail(true);
     try {
       const r = await fetch(`${API}/documents/${id}`, { headers });
       const d = await r.json();
       setSelectedDoc(d);
-      return d;
     } catch (e) { console.error(e); }
-    finally { setLoadingDocDetail(false); }
   }, [headers]);
 
   const fetchRecipients = useCallback(async (id) => {
-    if (!id) return [];
-    setLoadingRecipients(true);
     try {
       const r = await fetch(`${API}/notifications/document/${id}`, { headers });
       const d = await r.json();
-      const items = d.notifications || [];
-      setRecipients(items);
-      setRecipientsLoadedDocId(id);
-      return items;
+      setRecipients(d.notifications || []);
     } catch (e) { console.error(e); }
-    finally { setLoadingRecipients(false); }
   }, [headers]);
 
-  const fetchNotificationHistory = useCallback(async (status = historyStatusFilter) => {
+  const fetchSentHistory = useCallback(async () => {
     try {
-      const query = status && status !== "all" ? `?status=${encodeURIComponent(status)}` : "";
-      const r = await fetch(`${API}/notifications${query}`, { headers });
+      const r = await fetch(`${API}/notifications?status=delivered`, { headers });
       const d = await r.json();
       setSentHistory(d.notifications || []);
-    } catch (e) { console.error(e); }
-  }, [headers, historyStatusFilter]);
-
-  const fetchScheduledNotifications = useCallback(async () => {
-    try {
-      const r = await fetch(`${API}/notifications?status=scheduled`, { headers });
-      const d = await r.json();
-      setScheduledNotifications(d.notifications || []);
     } catch (e) { console.error(e); }
   }, [headers]);
 
@@ -285,27 +264,9 @@ export default function App() {
     return () => { clearInterval(i1); clearInterval(i2); };
   }, [authed]);
 
-  useEffect(() => {
-    if (!authed || view !== "notifications") return;
-    fetchScheduledNotifications();
-    if (notiTab === "history") {
-      fetchNotificationHistory(historyStatusFilter);
-    }
-  }, [authed, view, notiTab, historyStatusFilter, fetchScheduledNotifications, fetchNotificationHistory]);
-
   // ── Derived data ────────────────────────────────────────────────────────────
   const pendingDocs = useMemo(() => docs.filter(d => d.status === "pending_approval"), [docs]);
   const publishedDocs = useMemo(() => docs.filter(d => d.status === "published"), [docs]);
-  const filteredDocs = useMemo(() => {
-    const q = docSearch.trim().toLowerCase();
-    if (!q) return docs;
-    return docs.filter((d) => {
-      const title = (d.title || "").toLowerCase();
-      const type = (d.docType || "").toLowerCase();
-      const status = (d.status || "").toLowerCase();
-      return title.includes(q) || type.includes(q) || status.includes(q);
-    });
-  }, [docs, docSearch]);
   const extraction = selectedDoc?.latestVersion?.extraction || {};
   const structured = extraction?.structured || {};
   const events = extraction?.events || [];
@@ -394,6 +355,7 @@ export default function App() {
     return () => { active = false; };
   }, [jobId]);
 
+<<<<<<< HEAD
   async function prepareReviewContext(doc) {
     if (!doc?.id) return null;
 
@@ -452,6 +414,16 @@ export default function App() {
       }
     } catch (e) {
       setError(e.message || "Failed to approve document");
+=======
+  function openReview(doc) {
+    // For a doc from the list (minimal data), fetch full detail first
+    if (selectedDocId === doc.id) {
+      setShowReview({ doc, extraction, recipients });
+    } else {
+      selectDoc(doc.id);
+      // Small delay to let data load
+      setTimeout(() => setShowReview({ doc, extraction: null, recipients: [] }), 200);
+>>>>>>> parent of 60d56c6 (....)
     }
   }
 
@@ -464,6 +436,7 @@ export default function App() {
       navigate("/documents");
     }
     fetchDocs();
+<<<<<<< HEAD
     if (selectedDocId) {
       fetchDocDetail(selectedDocId);
       if (detailTab === "recipients") fetchRecipients(selectedDocId);
@@ -527,6 +500,9 @@ export default function App() {
     } catch (e) {
       setError(e.message || "Failed to delete document");
     }
+=======
+    if (selectedDocId) { fetchDocDetail(selectedDocId); fetchRecipients(selectedDocId); }
+>>>>>>> parent of 60d56c6 (....)
   }
 
   async function seedStudents() {
@@ -546,6 +522,7 @@ export default function App() {
   }
 
   function selectDoc(id) {
+<<<<<<< HEAD
     navigate(`/documents/${encodeURIComponent(id)}`);
   }
 
@@ -585,13 +562,23 @@ export default function App() {
       </Suspense>
     );
   }
+=======
+    setSelectedDocId(id);
+    fetchDocDetail(id);
+    fetchRecipients(id);
+    setDetailTab("intelligence");
+    if (view !== "documents") setView("documents");
+  }
+
+  if (!authed) return <LoginPage onLogin={() => setAuthed(true)} />;
+>>>>>>> parent of 60d56c6 (....)
 
   // ── Nav items ───────────────────────────────────────────────────────────────
   const navItems = [
     { id: "dashboard", icon: "📊", label: "Dashboard" },
     { id: "documents", icon: "📄", label: "Documents" },
     { id: "students", icon: "👥", label: "Students" },
-    { id: "notifications", icon: "🔔", label: "Notifications", badge: (pendingDocs.length + scheduledNotifications.length) || null },
+    { id: "notifications", icon: "🔔", label: "Notifications", badge: pendingDocs.length || null },
     { id: "settings", icon: "⚙️", label: "Settings" },
   ];
 
@@ -676,15 +663,11 @@ export default function App() {
             <div className="panel-title">Documents</div>
             <div className="panel-search">
               <span className="panel-search-icon">🔍</span>
-              <input
-                placeholder="Search documents..."
-                value={docSearch}
-                onChange={(e) => setDocSearch(e.target.value)}
-              />
+              <input placeholder="Search documents..." />
             </div>
           </div>
           <div className="panel-body">
-            {filteredDocs.map(doc => (
+            {docs.map(doc => (
               <div key={doc.id} className={`doc-item ${selectedDocId === doc.id ? "active" : ""}`} onClick={() => selectDoc(doc.id)}>
                 <div className="doc-item-title">{doc.title}</div>
                 <div className="doc-item-meta">
@@ -695,7 +678,6 @@ export default function App() {
               </div>
             ))}
             {docs.length === 0 && <div className="empty-state"><p>No documents uploaded yet.</p></div>}
-            {docs.length > 0 && filteredDocs.length === 0 && <div className="empty-state"><p>No documents match your search.</p></div>}
           </div>
           <div className="panel-actions">
             <button className="btn btn-primary btn-full" onClick={() => { setShowUpload(true); setWizStep(1); setJobId(null); setJobProgress(null); }}>📤 Upload Document</button>
@@ -755,19 +737,7 @@ export default function App() {
         {/* ═══ DOCUMENTS DETAIL ═══ */}
         {view === "documents" && (
           <>
-            {loadingDocDetail ? (
-              <div className="detail-loading">
-                <div className="skeleton-block skeleton-title" />
-                <div className="skeleton-block skeleton-subtitle" />
-                <div className="skeleton-grid">
-                  <div className="skeleton-block skeleton-card" />
-                  <div className="skeleton-block skeleton-card" />
-                  <div className="skeleton-block skeleton-card" />
-                  <div className="skeleton-block skeleton-card" />
-                </div>
-                <div className="skeleton-block skeleton-panel" />
-              </div>
-            ) : !selectedDoc ? (
+            {!selectedDoc ? (
               <div className="empty-state" style={{ flex: 1 }}><div className="empty-state-icon">📄</div><h3>Select a document</h3><p>Choose a document from the sidebar to view its AI analysis and routing details.</p></div>
             ) : (
               <div className="detail-shell">
@@ -780,8 +750,6 @@ export default function App() {
                       </div>
                     </div>
                     <div className="flex gap-2">
-                      <button className="btn btn-ghost btn-sm" onClick={openEditDocument}>✏️ Edit</button>
-                      <button className="btn btn-danger btn-sm" onClick={() => deleteDocument(selectedDoc.document.id)}>🗑 Delete</button>
                       <span className={`badge ${selectedDoc.document.status}`}>{selectedDoc.document.status?.replace(/_/g, " ")}</span>
                       {selectedDoc.document.status === "pending_approval" && (
                         <button className="btn btn-warning btn-sm" onClick={() => openReview({ id: selectedDoc.document.id, ...selectedDoc.document })}>Review & Approve</button>
@@ -798,6 +766,7 @@ export default function App() {
                       </div>
                       <div className="approval-banner-actions">
                         <button className="btn btn-success btn-sm" onClick={() => approveDoc(selectedDoc.document.id)}>✓ Approve</button>
+<<<<<<< HEAD
                         <button
                           className="btn btn-danger btn-sm"
                           onClick={async () => {
@@ -810,12 +779,16 @@ export default function App() {
                         >
                           ✕ Reject
                         </button>
+=======
+                        <button className="btn btn-danger btn-sm" onClick={() => setShowApproval(selectedDoc.document)}>✕ Reject</button>
+>>>>>>> parent of 60d56c6 (....)
                       </div>
                     </div>
                   )}
 
                   <div className="detail-tabs">
                     {["intelligence", "schedule", "routing", "recipients", "raw"].map(t => (
+<<<<<<< HEAD
                       <button
                         key={t}
                         className={`detail-tab ${detailTab === t ? "active" : ""}`}
@@ -826,6 +799,9 @@ export default function App() {
                           }
                         }}
                       >
+=======
+                      <button key={t} className={`detail-tab ${detailTab === t ? "active" : ""}`} onClick={() => { setDetailTab(t); if (t === "recipients") fetchRecipients(selectedDocId); }}>
+>>>>>>> parent of 60d56c6 (....)
                         {t === "intelligence" ? "🧠 Intelligence" : t === "schedule" ? "📅 Schedule" : t === "routing" ? "🔀 Routing" : t === "recipients" ? `👥 Recipients (${recipients.length})` : "{ } Raw Data"}
                       </button>
                     ))}
@@ -931,7 +907,6 @@ export default function App() {
                   {/* RECIPIENTS */}
                   {detailTab === "recipients" && (
                     <div className="data-table-wrap">
-                      {loadingRecipients && <div className="inline-loading">Loading recipients...</div>}
                       <table className="data-table">
                         <thead><tr><th>User ID</th><th>Full Name</th><th>Role</th><th>Department</th><th>Year</th><th>Conditions</th><th>Status</th></tr></thead>
                         <tbody>
@@ -1001,66 +976,43 @@ export default function App() {
         {view === "notifications" && (
           <>
             <div className="main-header">
-              <div><h2>Notifications</h2><p>Review pending approvals, scheduled deliveries, and delivery history</p></div>
+              <div><h2>Notifications</h2><p>Review queue and delivery history</p></div>
               <div className="flex gap-2">
+<<<<<<< HEAD
                 <button className="btn btn-primary btn-sm" onClick={openCompose}>✍️ Compose</button>
                 <button className={`btn ${notiTab === "queue" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => { setNotificationsRouteState("queue", historyStatusFilter); fetchScheduledNotifications(); }}>⏳ Queue ({pendingDocs.length + scheduledNotifications.length})</button>
                 <button className={`btn ${notiTab === "history" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => { setNotificationsRouteState("history", historyStatusFilter); fetchNotificationHistory(historyStatusFilter); }}>✅ History</button>
+=======
+                <button className="btn btn-primary btn-sm" onClick={() => setShowCompose(true)}>✍️ Compose</button>
+                <button className={`btn ${notiTab === "queue" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => setNotiTab("queue")}>⏳ Queue ({pendingDocs.length})</button>
+                <button className={`btn ${notiTab === "sent" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => { setNotiTab("sent"); fetchSentHistory(); }}>✅ History</button>
+>>>>>>> parent of 60d56c6 (....)
               </div>
             </div>
             <div className="main-body">
               {notiTab === "queue" && (
                 <>
-                  <div className="section-card" style={{ marginBottom: 16 }}>
-                    <div className="section-card-header"><div className="section-card-title">Pending approvals</div></div>
-                    <div className="section-card-body">
-                      {pendingDocs.length === 0 && <div className="empty-state"><div className="empty-state-icon">✅</div><h3>All clear!</h3><p>No pending approvals.</p></div>}
-                      {pendingDocs.map(doc => (
-                        <div key={doc.id} className="review-card urgent">
-                          <div className="review-card-header">
-                            <div><div className="review-card-title">{doc.title}</div><div className="review-card-meta">{doc.docType} · Uploaded {fmtDate(doc.createdAt)} · {doc.recipientCount || 0} recipients</div></div>
-                            <span className={`badge ${doc.status}`}>{formatNotificationStatus(doc.status)}</span>
-                          </div>
-                          <div className="review-card-footer">
-                            <span className="text-sm text-muted">AI Provider: <strong>{doc.provider}</strong> · Confidence: {((doc.confidenceScore || 0) * 100).toFixed(0)}%</span>
-                            <div className="flex gap-2">
-                              <button className="btn btn-warning btn-sm" onClick={() => openReview(doc)}>🔍 Review</button>
-                              <button className="btn btn-ghost btn-sm" onClick={() => selectDoc(doc.id)}>View Details</button>
-                            </div>
-                          </div>
+                  {pendingDocs.length === 0 && <div className="empty-state"><div className="empty-state-icon">✅</div><h3>All clear!</h3><p>No pending approvals.</p></div>}
+                  {pendingDocs.map(doc => (
+                    <div key={doc.id} className="review-card urgent">
+                      <div className="review-card-header">
+                        <div><div className="review-card-title">{doc.title}</div><div className="review-card-meta">{doc.docType} · Uploaded {fmtDate(doc.createdAt)} · {doc.recipientCount || 0} recipients</div></div>
+                        <span className={`badge ${doc.status}`}>{doc.status.replace(/_/g, " ")}</span>
+                      </div>
+                      <div className="review-card-footer">
+                        <span className="text-sm text-muted">AI Provider: <strong>{doc.provider}</strong> · Confidence: {((doc.confidenceScore || 0) * 100).toFixed(0)}%</span>
+                        <div className="flex gap-2">
+                          <button className="btn btn-warning btn-sm" onClick={() => openReview(doc)}>🔍 Review</button>
+                          <button className="btn btn-ghost btn-sm" onClick={() => selectDoc(doc.id)}>View Details</button>
                         </div>
-                      ))}
+                      </div>
                     </div>
-                  </div>
-
-                  <div className="section-card">
-                    <div className="section-card-header"><div className="section-card-title">Scheduled deliveries</div></div>
-                    <div className="section-card-body">
-                      {scheduledNotifications.length === 0 && <div className="empty-state"><div className="empty-state-icon">⏳</div><h3>No scheduled deliveries</h3><p>Scheduled notifications will appear here.</p></div>}
-                      {scheduledNotifications.length > 0 && (
-                        <div className="data-table-wrap">
-                          <table className="data-table">
-                            <thead><tr><th>Notification</th><th>Recipient</th><th>Department</th><th>Conditions</th><th>Scheduled For</th></tr></thead>
-                            <tbody>
-                              {scheduledNotifications.map((n) => (
-                                <tr key={n._id}>
-                                  <td><strong>{n.documentTitle}</strong><div className="text-xs text-muted">{formatNotificationStatus(n.status)}</div></td>
-                                  <td>{n.userFullName}</td>
-                                  <td>{n.userDepartment || "-"}</td>
-                                  <td><div className="tag-list">{(n.matchedConditions || []).map(c => <span key={c} className="tag" style={{ fontSize: 10 }}>{c}</span>)}</div></td>
-                                  <td>{fmtDateTime(n.scheduledAt || n.createdAt)}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                  ))}
                 </>
               )}
-              {notiTab === "history" && (
+              {notiTab === "sent" && (
                 <div className="data-table-wrap">
+<<<<<<< HEAD
                   <div className="flex gap-2 mb-3" style={{ flexWrap: "wrap" }}>
                     {[
                       ["delivered", "Delivered"],
@@ -1079,20 +1031,21 @@ export default function App() {
                       </button>
                     ))}
                   </div>
+=======
+>>>>>>> parent of 60d56c6 (....)
                   <table className="data-table">
-                    <thead><tr><th>Notification</th><th>Recipient</th><th>Department</th><th>Status</th><th>Conditions</th><th>Event Time</th></tr></thead>
+                    <thead><tr><th>Document</th><th>Recipient</th><th>Department</th><th>Conditions</th><th>Delivered At</th></tr></thead>
                     <tbody>
                       {sentHistory.map((n, i) => (
                         <tr key={i}>
                           <td><strong>{n.documentTitle}</strong></td>
                           <td>{n.userFullName}</td>
                           <td>{n.userDepartment || "-"}</td>
-                          <td><span className={`badge ${n.status}`}>{formatNotificationStatus(n.status)}</span></td>
                           <td><div className="tag-list">{(n.matchedConditions || []).map(c => <span key={c} className="tag" style={{ fontSize: 10 }}>{c}</span>)}</div></td>
-                          <td>{fmtDateTime(getNotificationEventTime(n))}</td>
+                          <td>{fmtDate(n.approvedAt || n.updatedAt)}</td>
                         </tr>
                       ))}
-                      {sentHistory.length === 0 && <tr><td colSpan={6} style={{ textAlign: "center", padding: 40 }} className="text-sm text-muted">No notifications found for this status.</td></tr>}
+                      {sentHistory.length === 0 && <tr><td colSpan={5} style={{ textAlign: "center", padding: 40 }} className="text-sm text-muted">No sent notifications yet.</td></tr>}
                     </tbody>
                   </table>
                 </div>
@@ -1220,6 +1173,7 @@ export default function App() {
 
       {/* ═══ REVIEW PANEL (replaces old approval modal) ═══ */}
       {showReview && (
+<<<<<<< HEAD
         <Suspense fallback={<div className="modal-overlay"><div className="modal">Loading review panel...</div></div>}>
           <ReviewPanel
             tenantId={tenantId}
@@ -1254,52 +1208,31 @@ export default function App() {
             onSent={() => { fetchDocs(); fetchScheduledNotifications(); fetchNotificationHistory(historyStatusFilter); }}
           />
         </Suspense>
+=======
+        <ReviewPanel
+          tenantId={tenantId}
+          doc={showReview.doc}
+          extraction={showReview.extraction || extraction}
+          recipients={showReview.recipients || recipients}
+          onAction={handleReviewAction}
+          onClose={() => setShowReview(null)}
+        />
+      )}
+
+      {/* ═══ COMPOSE MODAL ═══ */}
+      {showCompose && (
+        <ComposeModal
+          tenantId={tenantId}
+          onClose={() => setShowCompose(false)}
+          onSent={() => { fetchDocs(); fetchSentHistory(); }}
+        />
+>>>>>>> parent of 60d56c6 (....)
       )}
 
       {/* ═══ ERROR TOAST ═══ */}
       {error && (
         <div style={{ position: "fixed", bottom: 20, right: 20, padding: "12px 24px", background: "#fee2e2", color: "#991b1b", borderRadius: 12, border: "1px solid #fca5a5", boxShadow: "var(--shadow-lg)", zIndex: 200, cursor: "pointer" }} onClick={() => setError("")}>
           {error}
-        </div>
-      )}
-
-      {/* ═══ EDIT DOCUMENT MODAL ═══ */}
-      {showEditDoc && (
-        <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) setShowEditDoc(false); }}>
-          <div className="modal" style={{ width: 520 }}>
-            <div className="modal-header">
-              <div className="modal-title">✏️ Edit Document</div>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowEditDoc(false)}>✕</button>
-            </div>
-            <div className="modal-body">
-              <div className="form-group">
-                <label className="form-label">Title</label>
-                <input
-                  className="form-input"
-                  value={editDocTitle}
-                  onChange={e => setEditDocTitle(e.target.value)}
-                  placeholder="Document title"
-                />
-              </div>
-              <div className="form-group">
-                <label className="form-label">Type</label>
-                <select className="form-select" value={editDocType} onChange={e => setEditDocType(e.target.value)}>
-                  <option value="circular">Circular</option>
-                  <option value="exam_timetable">Timetable</option>
-                  <option value="notice">Notice</option>
-                  <option value="fee_reminder">Fee Reminder</option>
-                  <option value="general">General</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </div>
-            </div>
-            <div className="modal-footer">
-              <button className="btn btn-ghost" onClick={() => setShowEditDoc(false)}>Cancel</button>
-              <button className="btn btn-primary" disabled={savingDoc} onClick={saveDocumentChanges}>
-                {savingDoc ? "Saving..." : "Save Changes"}
-              </button>
-            </div>
-          </div>
         </div>
       )}
     </div>

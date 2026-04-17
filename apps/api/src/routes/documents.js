@@ -1,6 +1,5 @@
 const path = require("path");
 const crypto = require("crypto");
-const fs = require("fs");
 
 const express = require("express");
 const multer = require("multer");
@@ -10,7 +9,6 @@ const Document = require("../models/Document");
 const DocumentVersion = require("../models/DocumentVersion");
 const NotificationLog = require("../models/NotificationLog");
 const { processUploadedDocument } = require("../services/pipeline/documentPipeline");
-const { parsePdf } = require("../services/parser/pdfParser");
 const { extractStructuredData } = require("../services/extraction/extractor");
 const { deriveRecipients } = require("../services/routing/routingEngine");
 const { createJob, updateJob, failJob, completeJob } = require("../services/jobs/jobStore");
@@ -152,94 +150,6 @@ router.get("/:id", async (req, res, next) => {
     });
   } catch (error) {
     return next(error);
-  }
-});
-
-// ── PATCH /documents/:id ─────────────────────────────────────────────────────
-router.patch("/:id", async (req, res, next) => {
-  try {
-    const doc = await Document.findOne({ _id: req.params.id, tenantId: req.tenantId });
-    if (!doc) return res.status(404).json({ error: { message: "Document not found" } });
-
-    const { title, docType } = req.body || {};
-    const updates = {};
-
-    if (typeof title === "string") {
-      const normalizedTitle = title.trim();
-      if (!normalizedTitle) {
-        return res.status(400).json({ error: { message: "title cannot be empty" } });
-      }
-      updates.title = normalizedTitle;
-    }
-
-    if (typeof docType === "string") {
-      const normalizedDocType = docType.trim();
-      if (!normalizedDocType) {
-        return res.status(400).json({ error: { message: "docType cannot be empty" } });
-      }
-      updates.docType = normalizedDocType;
-    }
-
-    if (Object.keys(updates).length === 0) {
-      return res.status(400).json({ error: { message: "No valid update fields provided" } });
-    }
-
-    Object.assign(doc, updates);
-    await doc.save();
-
-    const logSet = {};
-    if (updates.title) logSet.documentTitle = updates.title;
-    if (updates.docType) {
-      logSet.documentType = updates.docType;
-      logSet.notificationType = updates.docType;
-    }
-
-    if (Object.keys(logSet).length > 0) {
-      await NotificationLog.updateMany(
-        { tenantId: req.tenantId, documentId: doc._id },
-        { $set: logSet }
-      );
-    }
-
-    res.json({
-      success: true,
-      document: {
-        id: doc._id,
-        title: doc.title,
-        docType: doc.docType,
-        status: doc.status,
-        updatedAt: doc.updatedAt
-      }
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// ── DELETE /documents/:id ────────────────────────────────────────────────────
-router.delete("/:id", async (req, res, next) => {
-  try {
-    const doc = await Document.findOne({ _id: req.params.id, tenantId: req.tenantId });
-    if (!doc) return res.status(404).json({ error: { message: "Document not found" } });
-
-    const filePath = doc.storagePath;
-    const docId = doc._id;
-
-    await DocumentVersion.deleteMany({ tenantId: req.tenantId, documentId: docId });
-    await NotificationLog.deleteMany({ tenantId: req.tenantId, documentId: docId });
-    await Document.deleteOne({ _id: docId, tenantId: req.tenantId });
-
-    if (filePath) {
-      fs.promises.unlink(filePath).catch((unlinkErr) => {
-        if (unlinkErr?.code !== "ENOENT") {
-          console.warn(`[documents] Failed to remove file ${filePath}: ${unlinkErr.message}`);
-        }
-      });
-    }
-
-    res.json({ success: true, id: docId });
-  } catch (error) {
-    next(error);
   }
 });
 
@@ -389,12 +299,7 @@ router.post("/:id/reprocess", async (req, res, next) => {
     });
     if (!latestVersion) return res.status(404).json({ error: { message: "Document version not found" } });
 
-    if (!doc.storagePath) {
-      return res.status(400).json({ error: { message: "Source document path missing; cannot reprocess" } });
-    }
-
-    const parserResult = await parsePdf(doc.storagePath);
-    const rawText = parserResult.rawText || "";
+    const rawText = latestVersion.parserOutput.rawText;
     const provider = req.body.provider || "ollama";
 
     doc.status = "processing";
@@ -403,17 +308,11 @@ router.post("/:id/reprocess", async (req, res, next) => {
     const extractionResult = await extractStructuredData({
       docType: doc.docType,
       rawText,
-      filePath: doc.storagePath,
-      pageCount: parserResult.pageCount || latestVersion?.parserOutput?.pageCount || 0,
+      filePath: latestVersion.parserOutput.filePath,
+      pageCount: latestVersion.parserOutput.pageCount,
       provider,
-      structuredData: parserResult.structuredData
+      structuredData: latestVersion.parserOutput.structuredData
     });
-
-    latestVersion.parserOutput = {
-      ...(latestVersion.parserOutput || {}),
-      rawTextLength: rawText.length,
-      pageCount: parserResult.pageCount || latestVersion?.parserOutput?.pageCount || 0
-    };
 
     latestVersion.extraction = extractionResult;
     await latestVersion.save();

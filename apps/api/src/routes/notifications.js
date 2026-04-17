@@ -210,8 +210,8 @@ router.patch("/:id/update", async (req, res, next) => {
 // ── PATCH /notifications/:id/read ────────────────────────────────────────────
 router.patch("/:id/read", async (req, res, next) => {
   try {
-    const log = await NotificationLog.findOneAndUpdate(
-      { _id: req.params.id, tenantId: req.tenantId },
+    const log = await NotificationLog.findByIdAndUpdate(
+      req.params.id,
       { $set: { readAt: new Date() } },
       { new: true }
     ).lean();
