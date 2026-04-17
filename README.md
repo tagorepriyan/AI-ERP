@@ -36,8 +36,26 @@ AI-ERP is an AI-powered academic communication platform that ingests campus docu
 - Compose modal for ad-hoc notifications
 - Notifications queue + history views with status filtering
 - Student management view with CSV import + seed demo data
-- PIN login gate and session-based auth state
+- URL-based frontend routing with deep links and browser history support
+- JWT-backed login flow with session storage persistence
 - Responsive layout across desktop, tablet, and mobile
+
+### Frontend Route Map
+
+- `/login` - authentication screen
+- `/dashboard` - system overview and pending approvals
+- `/documents` - documents list and search
+- `/documents/:docId` - document detail workspace
+- `/documents/:docId/review` - review/approve/reject modal route
+- `/students` - student directory and CSV import tools
+- `/notifications` - queue and history hub (supports query params)
+- `/notifications/compose` - compose modal route
+- `/settings` - AI/workflow configuration
+
+Query params:
+
+- `/documents/:docId?tab=intelligence|schedule|routing|recipients|raw`
+- `/notifications?tab=queue|history&status=delivered|scheduled|pending|failed|skipped|all`
 
 ### Backend (API)
 
@@ -189,8 +207,8 @@ Start web app (new terminal):
 
 ### Notes
 
-- Current authentication is PIN/session-based for demo.
-- **Recommended next step:** implement JWT-based authentication/authorization for production security.
+- Current authentication uses JWT token issuance (`/auth/login`) and bearer validation middleware on protected API routes.
+- Optional next step: add role-based policy granularity for sensitive operations.
 
 ## Developer Notes
 

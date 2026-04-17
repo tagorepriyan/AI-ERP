@@ -1,10 +1,15 @@
 import { useEffect, useMemo, useState, useCallback, useRef, lazy, Suspense } from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 const LoginPage = lazy(() => import("./LoginPage"));
 const ReviewPanel = lazy(() => import("./ReviewPanel"));
 const ComposeModal = lazy(() => import("./ComposeModal"));
 
 const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
+const APP_SECTIONS = ["dashboard", "documents", "students", "notifications", "settings"];
+const DOCUMENT_TABS = ["intelligence", "schedule", "routing", "recipients", "raw"];
+const NOTIFICATION_TABS = ["queue", "history"];
+const HISTORY_STATUSES = ["delivered", "scheduled", "pending", "failed", "skipped", "all"];
 
 function fmtDate(v) {
   if (!v) return "-";
@@ -33,8 +38,32 @@ function fmtTime(sec) {
 }
 
 export default function App() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const pathSegments = useMemo(() => {
+    const clean = location.pathname.replace(/^\/+|\/+$/g, "");
+    return clean ? clean.split("/") : [];
+  }, [location.pathname]);
+
+  const topSegment = pathSegments[0] || "";
+  const section = topSegment || "dashboard";
+  const view = APP_SECTIONS.includes(section) ? section : "dashboard";
+  const isLoginRoute = section === "login";
+  const routedDocId = section === "documents" && pathSegments[1] ? decodeURIComponent(pathSegments[1]) : null;
+  const isReviewRoute = section === "documents" && pathSegments.length === 3 && pathSegments[2] === "review";
+  const isComposeRoute = section === "notifications" && pathSegments.length === 2 && pathSegments[1] === "compose";
+
+  const docTabParam = searchParams.get("tab");
+  const detailTab = DOCUMENT_TABS.includes(docTabParam) ? docTabParam : "intelligence";
+
+  const notiTabParam = searchParams.get("tab");
+  const notiTab = NOTIFICATION_TABS.includes(notiTabParam) ? notiTabParam : "queue";
+  const statusParam = searchParams.get("status");
+  const historyStatusFilter = HISTORY_STATUSES.includes(statusParam) ? statusParam : "delivered";
+
   const [authed, setAuthed] = useState(() => sessionStorage.getItem("notify_auth") === "1");
-  const [view, setView] = useState("dashboard");
   const [tenantId] = useState("default-campus");
   const [token, setToken] = useState(() => sessionStorage.getItem("notify_token") || "");
   const headers = useMemo(() => ({
@@ -52,7 +81,6 @@ export default function App() {
   const [loadingDocDetail, setLoadingDocDetail] = useState(false);
   const [loadingRecipients, setLoadingRecipients] = useState(false);
   const [recipientsLoadedDocId, setRecipientsLoadedDocId] = useState(null);
-  const [detailTab, setDetailTab] = useState("intelligence");
   const [docSearch, setDocSearch] = useState("");
   const [error, setError] = useState("");
   const [showEditDoc, setShowEditDoc] = useState(false);
@@ -72,7 +100,6 @@ export default function App() {
 
   // Review panel (replaces old simple approval modal)
   const [showReview, setShowReview] = useState(null);
-  const [showCompose, setShowCompose] = useState(false);
 
   // AI status
   const [aiStatus, setAiStatus] = useState("checking");
@@ -83,8 +110,6 @@ export default function App() {
   // Notification history
   const [sentHistory, setSentHistory] = useState([]);
   const [scheduledNotifications, setScheduledNotifications] = useState([]);
-  const [historyStatusFilter, setHistoryStatusFilter] = useState("delivered");
-  const [notiTab, setNotiTab] = useState("queue");
 
   // CSV import
   const csvRef = useRef();
@@ -104,6 +129,38 @@ export default function App() {
     setSettings(next);
     localStorage.setItem("notify_settings", JSON.stringify(next));
   };
+
+  const navigateSection = useCallback((target) => {
+    navigate(`/${target}`);
+  }, [navigate]);
+
+  const updateRouteSearch = useCallback((updates, { replace = true } = {}) => {
+    const params = new URLSearchParams(searchParams);
+    Object.entries(updates).forEach(([key, value]) => {
+      if (value === null || value === undefined || value === "") {
+        params.delete(key);
+      } else {
+        params.set(key, value);
+      }
+    });
+    setSearchParams(params, { replace });
+  }, [searchParams, setSearchParams]);
+
+  const setDocumentTab = useCallback((tab) => {
+    updateRouteSearch({ tab: tab === "intelligence" ? null : tab });
+  }, [updateRouteSearch]);
+
+  const setNotificationsRouteState = useCallback((tab, status = historyStatusFilter) => {
+    const params = new URLSearchParams();
+    if (tab === "history") {
+      params.set("tab", "history");
+      if (status && status !== "delivered") {
+        params.set("status", status);
+      }
+    }
+    const q = params.toString();
+    navigate(`/notifications${q ? `?${q}` : ""}`);
+  }, [historyStatusFilter, navigate]);
 
   // ── Fetchers ────────────────────────────────────────────────────────────────
   const fetchDocs = useCallback(async () => {
@@ -179,6 +236,50 @@ export default function App() {
       if (r.ok) setSysStats(await r.json());
     } catch { /* silent */ }
   }, [headers]);
+
+  useEffect(() => {
+    if (!authed) {
+      if (location.pathname !== "/login") {
+        navigate("/login", { replace: true });
+      }
+      return;
+    }
+
+    if (location.pathname === "/" || isLoginRoute) {
+      navigate("/dashboard", { replace: true });
+      return;
+    }
+
+    if (!APP_SECTIONS.includes(section)) {
+      navigate("/dashboard", { replace: true });
+      return;
+    }
+
+    if (section === "documents") {
+      const isValidDocPath = pathSegments.length <= 3 && (pathSegments.length < 3 || pathSegments[2] === "review");
+      if (!isValidDocPath) {
+        navigate("/documents", { replace: true });
+      }
+    }
+
+    if (section === "notifications" && pathSegments.length > 2) {
+      navigate("/notifications", { replace: true });
+    }
+  }, [authed, location.pathname, navigate, isLoginRoute, section, pathSegments]);
+
+  useEffect(() => {
+    if (!authed) return;
+    if (selectedDocId === routedDocId) return;
+
+    setSelectedDocId(routedDocId || null);
+    setSelectedDoc(null);
+    setRecipients([]);
+    setRecipientsLoadedDocId(null);
+
+    if (routedDocId) {
+      fetchDocDetail(routedDocId);
+    }
+  }, [authed, selectedDocId, routedDocId, fetchDocDetail]);
 
   useEffect(() => {
     if (!authed) return;
@@ -294,32 +395,43 @@ export default function App() {
     return () => { active = false; };
   }, [jobId]);
 
-  async function openReview(doc) {
+  async function prepareReviewContext(doc) {
+    if (!doc?.id) return null;
+
     // For a doc from the list (minimal data), fetch full detail first
     if (selectedDocId === doc.id) {
       let latestRecipients = recipients;
       if (recipientsLoadedDocId !== doc.id) {
         latestRecipients = await fetchRecipients(doc.id);
       }
-      setShowReview({ doc, extraction, recipients: latestRecipients || [] });
+      const payload = { doc, extraction, recipients: latestRecipients || [] };
+      setShowReview(payload);
+      return payload;
     } else {
-      setSelectedDocId(doc.id);
       setRecipients([]);
       setRecipientsLoadedDocId(null);
-      setDetailTab("intelligence");
-      if (view !== "documents") setView("documents");
 
       const [detail, latestRecipients] = await Promise.all([
         fetchDocDetail(doc.id),
         fetchRecipients(doc.id),
       ]);
 
-      setShowReview({
+      const payload = {
         doc: detail?.document ? { id: detail.document.id, ...detail.document } : doc,
         extraction: detail?.latestVersion?.extraction || null,
         recipients: latestRecipients || []
-      });
+      };
+      setShowReview(payload);
+      return payload;
     }
+  }
+
+  async function openReview(doc) {
+    const reviewDocId = doc?.id || selectedDocId;
+    if (!reviewDocId) return;
+
+    await prepareReviewContext(doc || { id: reviewDocId, title: selectedDoc?.document?.title || "Document" });
+    navigate(`/documents/${encodeURIComponent(reviewDocId)}/review`);
   }
 
   async function approveDoc(docId) {
@@ -345,7 +457,13 @@ export default function App() {
   }
 
   function handleReviewAction(action) {
+    const currentReviewDocId = showReview?.doc?.id || selectedDocId;
     setShowReview(null);
+    if (currentReviewDocId) {
+      navigate(`/documents/${encodeURIComponent(currentReviewDocId)}`);
+    } else {
+      navigate("/documents");
+    }
     fetchDocs();
     if (selectedDocId) {
       fetchDocDetail(selectedDocId);
@@ -401,7 +519,7 @@ export default function App() {
       if (!r.ok) throw new Error(d?.error?.message || "Failed to delete document");
 
       if (selectedDocId === docId) {
-        setSelectedDocId(null);
+        navigate("/documents");
         setSelectedDoc(null);
         setRecipients([]);
         setRecipientsLoadedDocId(null);
@@ -429,19 +547,38 @@ export default function App() {
   }
 
   function selectDoc(id) {
-    setSelectedDocId(id);
-    setSelectedDoc(null);
-    setRecipients([]);
-    setRecipientsLoadedDocId(null);
-    fetchDocDetail(id);
-    setDetailTab("intelligence");
-    if (view !== "documents") setView("documents");
+    navigate(`/documents/${encodeURIComponent(id)}`);
   }
+
+  useEffect(() => {
+    if (!authed || !isReviewRoute || !routedDocId) return;
+    if (showReview?.doc?.id === routedDocId) return;
+
+    const doc = docs.find((item) => item.id === routedDocId) || { id: routedDocId, title: selectedDoc?.document?.title || "Document" };
+    prepareReviewContext(doc);
+  }, [authed, isReviewRoute, routedDocId, showReview, docs, selectedDoc, prepareReviewContext]);
+
+  useEffect(() => {
+    if (isReviewRoute) return;
+    if (showReview) setShowReview(null);
+  }, [isReviewRoute, showReview]);
+
+  const closeCompose = useCallback(() => {
+    navigate(`/notifications${location.search || ""}`);
+  }, [navigate, location.search]);
+
+  const openCompose = useCallback(() => {
+    navigate(`/notifications/compose${location.search || ""}`);
+  }, [navigate, location.search]);
 
   if (!authed) {
     return (
       <Suspense fallback={<div className="app-loading">Loading login...</div>}>
-        <LoginPage onLogin={(payload) => { setToken(payload?.token || sessionStorage.getItem("notify_token") || ""); setAuthed(true); }} />
+        <LoginPage onLogin={(payload) => {
+          setToken(payload?.token || sessionStorage.getItem("notify_token") || "");
+          setAuthed(true);
+          navigate("/dashboard", { replace: true });
+        }} />
       </Suspense>
     );
   }
@@ -462,7 +599,7 @@ export default function App() {
       <nav className="nav-rail">
         <div className="nav-logo">🔔</div>
         {navItems.map(n => (
-          <button key={n.id} className={`nav-item ${view === n.id ? "active" : ""}`} onClick={() => setView(n.id)} title={n.label}>
+          <button key={n.id} className={`nav-item ${view === n.id ? "active" : ""}`} onClick={() => navigateSection(n.id)} title={n.label}>
             {n.icon}
             {n.badge ? <span className="nav-badge">{n.badge}</span> : null}
           </button>
@@ -522,7 +659,7 @@ export default function App() {
           <div className={`ai-dot ${aiStatus}`} />
           <span className="ai-label">{aiStatus === "online" ? "AI ON" : aiStatus === "checking" ? "..." : "OFF"}</span>
         </div>
-        <button className="nav-item" onClick={() => { sessionStorage.removeItem("notify_auth"); sessionStorage.removeItem("notify_token"); setToken(""); setAuthed(false); }} title="Logout">🚪</button>
+        <button className="nav-item" onClick={() => { sessionStorage.removeItem("notify_auth"); sessionStorage.removeItem("notify_token"); setToken(""); setAuthed(false); navigate("/login", { replace: true }); }} title="Logout">🚪</button>
       </nav>
 
       {/* ── Context Panel ─────────────────────────────────────── */}
@@ -640,7 +777,7 @@ export default function App() {
                       <button className="btn btn-danger btn-sm" onClick={() => deleteDocument(selectedDoc.document.id)}>🗑 Delete</button>
                       <span className={`badge ${selectedDoc.document.status}`}>{selectedDoc.document.status?.replace(/_/g, " ")}</span>
                       {selectedDoc.document.status === "pending_approval" && (
-                        <button className="btn btn-warning btn-sm" onClick={() => setShowReview({ doc: { id: selectedDoc.document.id, ...selectedDoc.document }, extraction, recipients })}>Review & Approve</button>
+                        <button className="btn btn-warning btn-sm" onClick={() => openReview({ id: selectedDoc.document.id, ...selectedDoc.document })}>Review & Approve</button>
                       )}
                     </div>
                   </div>
@@ -656,7 +793,13 @@ export default function App() {
                         <button className="btn btn-success btn-sm" onClick={() => approveDoc(selectedDoc.document.id)}>✓ Approve</button>
                         <button
                           className="btn btn-danger btn-sm"
-                          onClick={() => setShowReview({ doc: { id: selectedDoc.document.id, ...selectedDoc.document }, extraction, recipients, initialTab: "reject" })}
+                          onClick={async () => {
+                            const payload = await prepareReviewContext({ id: selectedDoc.document.id, ...selectedDoc.document });
+                            if (payload) {
+                              setShowReview({ ...payload, initialTab: "reject" });
+                              navigate(`/documents/${encodeURIComponent(selectedDoc.document.id)}/review`);
+                            }
+                          }}
                         >
                           ✕ Reject
                         </button>
@@ -670,7 +813,7 @@ export default function App() {
                         key={t}
                         className={`detail-tab ${detailTab === t ? "active" : ""}`}
                         onClick={() => {
-                          setDetailTab(t);
+                          setDocumentTab(t);
                           if (t === "recipients" && selectedDocId && recipientsLoadedDocId !== selectedDocId) {
                             fetchRecipients(selectedDocId);
                           }
@@ -853,9 +996,9 @@ export default function App() {
             <div className="main-header">
               <div><h2>Notifications</h2><p>Review pending approvals, scheduled deliveries, and delivery history</p></div>
               <div className="flex gap-2">
-                <button className="btn btn-primary btn-sm" onClick={() => setShowCompose(true)}>✍️ Compose</button>
-                <button className={`btn ${notiTab === "queue" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => { setNotiTab("queue"); fetchScheduledNotifications(); }}>⏳ Queue ({pendingDocs.length + scheduledNotifications.length})</button>
-                <button className={`btn ${notiTab === "history" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => { setNotiTab("history"); fetchNotificationHistory(historyStatusFilter); }}>✅ History</button>
+                <button className="btn btn-primary btn-sm" onClick={openCompose}>✍️ Compose</button>
+                <button className={`btn ${notiTab === "queue" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => { setNotificationsRouteState("queue", historyStatusFilter); fetchScheduledNotifications(); }}>⏳ Queue ({pendingDocs.length + scheduledNotifications.length})</button>
+                <button className={`btn ${notiTab === "history" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => { setNotificationsRouteState("history", historyStatusFilter); fetchNotificationHistory(historyStatusFilter); }}>✅ History</button>
               </div>
             </div>
             <div className="main-body">
@@ -923,7 +1066,7 @@ export default function App() {
                       <button
                         key={status}
                         className={`btn ${historyStatusFilter === status ? "btn-primary" : "btn-ghost"} btn-sm`}
-                        onClick={() => { setHistoryStatusFilter(status); fetchNotificationHistory(status); }}
+                        onClick={() => { setNotificationsRouteState("history", status); fetchNotificationHistory(status); }}
                       >
                         {label}
                       </button>
@@ -1079,18 +1222,25 @@ export default function App() {
             recipients={showReview.recipients || recipients}
             initialTab={showReview.initialTab}
             onAction={handleReviewAction}
-            onClose={() => setShowReview(null)}
+            onClose={() => {
+              setShowReview(null);
+              if (showReview?.doc?.id) {
+                navigate(`/documents/${encodeURIComponent(showReview.doc.id)}`);
+              } else {
+                navigate("/documents");
+              }
+            }}
           />
         </Suspense>
       )}
 
       {/* ═══ COMPOSE MODAL ═══ */}
-      {showCompose && (
+      {isComposeRoute && (
         <Suspense fallback={<div className="modal-overlay"><div className="modal">Loading composer...</div></div>}>
           <ComposeModal
             tenantId={tenantId}
             authToken={token}
-            onClose={() => setShowCompose(false)}
+            onClose={closeCompose}
             onSent={() => { fetchDocs(); fetchScheduledNotifications(); fetchNotificationHistory(historyStatusFilter); }}
           />
         </Suspense>
