@@ -11,6 +11,21 @@ const { buildFilterQuery } = require("./targeting");
 
 const router = express.Router();
 
+// ── PATCH /notifications/:id/read ──────────────────────────────────────────
+router.patch("/:id/read", async (req, res, next) => {
+  try {
+    const noti = await NotificationLog.findOneAndUpdate(
+      { _id: req.params.id, userId: req.query.userId || req.body.userId },
+      { $set: { readAt: new Date() } },
+      { new: true }
+    );
+    if (!noti) return res.status(404).json({ error: { message: "Notification not found" } });
+    res.json({ success: true, notification: noti });
+  } catch (err) {
+    next(err);
+  }
+});
+
 const upload = multer({
   dest: path.resolve(process.cwd(), env.uploadDir),
   limits: { fileSize: 250 * 1024 * 1024 }

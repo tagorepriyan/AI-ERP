@@ -11,7 +11,9 @@
     "dev:api": "npm --workspace @ai-erp/api run dev",
     "start:api": "npm --workspace @ai-erp/api run start",
     "dev:web": "npm --workspace @ai-erp/web run dev",
-    "build:web": "npm --workspace @ai-erp/web run build"
+    "build:web": "npm --workspace @ai-erp/web run build",
+    "dev:student": "npm --workspace @ai-erp/student run dev",
+    "build:student": "npm --workspace @ai-erp/student run build"
   },
   "dependencies": {
     "mongodb": "^7.1.1"

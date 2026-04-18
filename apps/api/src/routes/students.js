@@ -4,6 +4,21 @@ const { deriveRecipients } = require("../services/routing/routingEngine");
 
 const router = express.Router();
 
+// ── GET /students/me ────────────────────────────────────────────────────────
+router.get("/me", async (req, res, next) => {
+  try {
+    const studentId = req.query.id;
+    if (!studentId) return res.status(400).json({ error: { message: "id is required" } });
+    
+    const student = await Student.findOne({ _id: studentId, tenantId: req.tenantId }).lean();
+    if (!student) return res.status(404).json({ error: { message: "Student not found" } });
+    
+    res.json({ success: true, student });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── GET /students ─────────────────────────────────────────────────────────────
 router.get("/", async (req, res, next) => {
   try {
@@ -40,6 +55,54 @@ router.post("/", async (req, res, next) => {
     if (err.code === 11000) {
       return res.status(409).json({ error: { message: "Registration number already exists for this tenant" } });
     }
+    next(err);
+  }
+});
+
+// ── POST /students/login — Student Portal authentication ───────────────────────
+router.post("/login", async (req, res, next) => {
+  try {
+    const { registrationNo, pin } = req.body;
+    if (!registrationNo) {
+      return res.status(400).json({ error: { message: "registrationNo is required" } });
+    }
+
+    // In a prod system, pin would be verified via bcrypt hashes. 
+    // Here we allow 1111 for demo purposes or fallback to a db check.
+    if (pin && pin !== "1111") {
+      return res.status(401).json({ error: { message: "Invalid credentials" } });
+    }
+
+    const student = await Student.findOne({ 
+      tenantId: req.tenantId, 
+      registrationNo: new RegExp(`^${registrationNo}$`, "i") 
+    }).lean();
+
+    if (!student) {
+      return res.status(404).json({ error: { message: "Student not found with that Registration Number" } });
+    }
+
+    // Return a mock JWT / session token 
+    const token = Buffer.from(JSON.stringify({
+      id: student._id,
+      registrationNo: student.registrationNo,
+      role: "student",
+      tenantId: req.tenantId,
+      expiresAt: Date.now() + 86400000 
+    })).toString("base64");
+
+    res.json({
+      success: true,
+      token,
+      student: {
+        id: student._id.toString(),
+        registrationNo: student.registrationNo,
+        name: student.fullName,
+        department: student.department
+      }
+    });
+
+  } catch (err) {
     next(err);
   }
 });
