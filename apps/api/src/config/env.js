@@ -34,12 +34,13 @@ function parseProviderOrder(value) {
 const geminiApiKey = normalizeApiKey(process.env.GEMINI_API_KEY);
 const groqApiKey = normalizeApiKey(process.env.GROQ_API_KEY);
 const openRouterApiKey = normalizeApiKey(process.env.OPENROUTER_API_KEY);
+const azureVisionApiKey = normalizeApiKey(process.env.AZURE_VISION_KEY || process.env.AZURE_COMPUTER_VISION_KEY);
 
 const env = {
   nodeEnv: process.env.NODE_ENV || "development",
   port: Number(process.env.PORT || 4000),
   mongodbUri: process.env.MONGODB_URI || "mongodb://127.0.0.1:27017/ai_erp",
-  uploadDir: process.env.UPLOAD_DIR || "apps/api/uploads",
+  uploadDir: process.env.UPLOAD_DIR || path.resolve(__dirname, "../../uploads"),
   defaultTenantId: process.env.DEFAULT_TENANT_ID || "default-campus",
   ai: {
     timeoutMs: Number(process.env.AI_TIMEOUT_MS || 30000),
@@ -57,6 +58,12 @@ const env = {
       apiKey: openRouterApiKey,
       model: process.env.OPENROUTER_MODEL || "meta-llama/llama-3.1-8b-instruct:free",
       baseUrl: process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1"
+    },
+    azureVision: {
+      apiKey: azureVisionApiKey,
+      endpoint: (process.env.AZURE_VISION_ENDPOINT || "").trim(),
+      timeoutMs: Number(process.env.AZURE_VISION_TIMEOUT_MS || 120000),
+      pollIntervalMs: Number(process.env.AZURE_VISION_POLL_INTERVAL_MS || 1000)
     },
     // Backward-compatible aliases (Gemini defaults)
     apiKey: geminiApiKey,

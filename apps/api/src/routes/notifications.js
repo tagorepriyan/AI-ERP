@@ -1,9 +1,20 @@
 const express = require("express");
+const path = require("path");
+const multer = require("multer");
+const crypto = require("crypto");
+const env = require("../config/env");
+
 const NotificationLog = require("../models/NotificationLog");
 const Student = require("../models/Student");
+const Document = require("../models/Document");
 const { buildFilterQuery } = require("./targeting");
 
 const router = express.Router();
+
+const upload = multer({
+  dest: path.resolve(process.cwd(), env.uploadDir),
+  limits: { fileSize: 250 * 1024 * 1024 }
+});
 
 // ── GET /notifications ───────────────────────────────────────────────────────
 router.get("/", async (req, res, next) => {
@@ -65,7 +76,7 @@ router.get("/document/:documentId/summary", async (req, res, next) => {
 });
 
 // ── POST /notifications/compose — create custom notification ─────────────────
-router.post("/compose", async (req, res, next) => {
+router.post("/compose", upload.single("file"), async (req, res, next) => {
   try {
     const {
       title = "Custom Notification",
@@ -73,12 +84,18 @@ router.post("/compose", async (req, res, next) => {
       notificationType = "custom",
       priority = "normal",
       deliveryMode = "ai_summary",
-      filters = {},
       scheduledAt = null
     } = req.body;
 
-    if (!content.trim()) {
-      return res.status(400).json({ error: { message: "content is required" } });
+    let filters = {};
+    if (typeof req.body.filters === "string") {
+      try { filters = JSON.parse(req.body.filters); } catch(e) {}
+    } else if (req.body.filters) {
+      filters = req.body.filters;
+    }
+
+    if (!content.trim() && !req.file) {
+      return res.status(400).json({ error: { message: "Content or file is required" } });
     }
 
     // Find matching students
@@ -105,10 +122,35 @@ router.post("/compose", async (req, res, next) => {
     const status = isScheduled ? "scheduled" : "delivered";
     const now = new Date();
 
+    let documentId = null;
+    let fallbackDocTitle = title;
+
+    if (req.file) {
+      const doc = new Document({
+        tenantId: req.tenantId,
+        title: title || req.file.originalname,
+        docType: notificationType,
+        sourceFileName: req.file.originalname,
+        storagePath: req.file.path,
+        content,
+        deliveryMode: deliveryMode === "ai_summary" ? "both" : deliveryMode,
+        priority,
+        status: isScheduled ? "scheduled" : "published",
+        uploadedBy: "admin",
+        approvedBy: "admin",
+        approvedAt: now,
+        scheduledAt: isScheduled ? new Date(scheduledAt) : null,
+        approvedFilters: filters
+      });
+      await doc.save();
+      documentId = doc._id;
+      fallbackDocTitle = doc.title;
+    }
+
     const logDocs = students.map(s => ({
       tenantId: req.tenantId,
-      documentId: null,
-      documentTitle: title,
+      documentId,
+      documentTitle: fallbackDocTitle,
       documentType: notificationType,
       content,
       notificationType,

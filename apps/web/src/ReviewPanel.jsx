@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
-import TargetingEditor from "./TargetingEditor";
+import { lazy, Suspense, useState, useEffect, useCallback } from "react";
+
+const TargetingEditor = lazy(() => import("./TargetingEditor"));
 
 const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
 
@@ -126,12 +127,14 @@ export default function ReviewPanel({ tenantId, doc, extraction, recipients, onA
         <div className="modal-body" style={{ overflowY: "auto", maxHeight: "calc(90vh - 280px)" }}>
           {/* TARGETING TAB */}
           {tab === "targeting" && (
-            <TargetingEditor
-              tenantId={tenantId}
-              initialFilters={filters}
-              onFiltersChange={setFilters}
-              onPreviewUpdate={p => setPreviewCount(p.count)}
-            />
+            <Suspense fallback={<div className="text-sm text-muted">Loading targeting editor...</div>}>
+              <TargetingEditor
+                tenantId={tenantId}
+                initialFilters={filters}
+                onFiltersChange={setFilters}
+                onPreviewUpdate={p => setPreviewCount(p.count)}
+              />
+            </Suspense>
           )}
 
           {/* RECIPIENTS TAB */}

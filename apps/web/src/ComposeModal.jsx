@@ -1,11 +1,10 @@
-import { useState } from "react";
-import TargetingEditor from "./TargetingEditor";
+import { lazy, Suspense, useState } from "react";
+
+const TargetingEditor = lazy(() => import("./TargetingEditor"));
 
 const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
 
 export default function ComposeModal({ tenantId, onClose, onSent }) {
-  const headers = { "x-tenant-id": tenantId, "Content-Type": "application/json" };
-
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [notiType, setNotiType] = useState("custom");
@@ -16,24 +15,31 @@ export default function ComposeModal({ tenantId, onClose, onSent }) {
   const [previewCount, setPreviewCount] = useState(0);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
+  const [file, setFile] = useState(null);
 
   async function handleSend() {
-    if (!content.trim()) { setError("Content is required"); return; }
+    if (!content.trim() && !file) { setError("Content or file is required"); return; }
     if (previewCount === 0) { setError("No recipients matched"); return; }
     setError("");
     setSending(true);
     try {
-      const body = {
-        title: title || "Custom Notification",
-        content,
-        notificationType: notiType,
-        priority,
-        deliveryMode,
-        filters,
-        scheduledAt: scheduledAt || null
-      };
+      const fd = new FormData();
+      fd.append("title", title || "Custom Notification");
+      fd.append("content", content);
+      fd.append("notificationType", notiType);
+      fd.append("priority", priority);
+      fd.append("deliveryMode", deliveryMode);
+      if (scheduledAt) fd.append("scheduledAt", scheduledAt);
+      fd.append("filters", JSON.stringify(filters));
+      if (file) fd.append("file", file);
+
+      // Do not set Content-Type header so browser adds the generated multipart boundary
+      const headers = { "x-tenant-id": tenantId };
+      const authToken = sessionStorage.getItem("notify_token");
+      if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+
       const r = await fetch(`${API}/notifications/compose`, {
-        method: "POST", headers, body: JSON.stringify(body)
+        method: "POST", headers, body: fd
       });
       const d = await r.json();
       if (!r.ok) { setError(d.error?.message || "Failed"); setSending(false); return; }
@@ -60,7 +66,12 @@ export default function ComposeModal({ tenantId, onClose, onSent }) {
             <input className="form-input" value={title} onChange={e => setTitle(e.target.value)} placeholder="Notification title" />
           </div>
           <div className="form-group">
-            <label className="form-label">Content</label>
+            <label className="form-label">Attached File (optional)</label>
+            <input type="file" className="form-input" onChange={e => setFile(e.target.files?.[0] || null)} />
+            <div className="text-sm text-muted" style={{ marginTop: 4 }}>This file will bypass AI parsing and go straight to recipients.</div>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Content or Message text</label>
             <textarea className="form-input" rows={4} value={content} onChange={e => setContent(e.target.value)} placeholder="Type the notification content..." style={{ resize: "vertical" }} />
           </div>
 
@@ -106,12 +117,14 @@ export default function ComposeModal({ tenantId, onClose, onSent }) {
           <div className="divider" />
 
           {/* Targeting */}
-          <TargetingEditor
-            tenantId={tenantId}
-            initialFilters={{}}
-            onFiltersChange={setFilters}
-            onPreviewUpdate={p => setPreviewCount(p.count)}
-          />
+          <Suspense fallback={<div className="text-sm text-muted">Loading targeting editor...</div>}>
+            <TargetingEditor
+              tenantId={tenantId}
+              initialFilters={{}}
+              onFiltersChange={setFilters}
+              onPreviewUpdate={p => setPreviewCount(p.count)}
+            />
+          </Suspense>
 
           {error && <div className="login-error" style={{ marginTop: 12 }}>{error}</div>}
         </div>

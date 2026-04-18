@@ -15,7 +15,10 @@ const { getJob, cancelJob } = require("./services/jobs/jobStore");
 const app = express();
 
 app.use(cors());
-app.use(express.json({ limit: "2mb" }));
+// Increase payload limits for file uploads and large documents
+app.use(express.json({ limit: "100mb" }));
+app.use(express.urlencoded({ limit: "100mb", extended: true }));
+app.use(express.raw({ limit: "100mb", type: "application/octet-stream" }));
 app.use(tenantContext);
 
 app.use("/health", healthRoutes);

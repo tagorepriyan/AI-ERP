@@ -1,5 +1,28 @@
 const env = require("../../config/env");
 const fs = require("fs/promises");
+const path = require("path");
+
+function detectMimeTypeFromFilePath(filePath) {
+  const ext = path.extname(filePath || "").toLowerCase();
+  const byExt = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".csv": "text/csv",
+    ".json": "application/json",
+    ".log": "text/plain"
+  };
+
+  return byExt[ext] || "application/octet-stream";
+}
 
 function normalizeTextValue(value) {
   return (value || "").replace(/\s+/g, " ").trim();
@@ -967,8 +990,8 @@ async function extractWithOpenAICompatibleFromText({ providerName, baseUrl, apiK
 async function extractWithOllamaFromText({ docType, rawText, model }) {
   const prompt = buildExtractionPrompt(docType);
   const controller = new AbortController();
-  // Allow a very robust timeout (300s/5m) for Ollama since local CPU generation can be extremely slow
-  const timeout = setTimeout(() => controller.abort(), 300000);
+  const timeoutMs = Number(process.env.OLLAMA_TIMEOUT_MS || 120000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch("http://127.0.0.1:11434/api/generate", {
@@ -1106,9 +1129,10 @@ async function extractWithGeminiFromText({ docType, rawText }) {
   });
 }
 
-async function extractWithGeminiFromPdf({ docType, filePath, pageCount }) {
+async function extractWithGeminiFromFile({ docType, filePath, pageCount }) {
   const fileBuffer = await fs.readFile(filePath);
-  const base64Pdf = fileBuffer.toString("base64");
+  const base64File = fileBuffer.toString("base64");
+  const mimeType = detectMimeTypeFromFilePath(filePath);
 
   const prompt = buildExtractionPrompt(docType);
 
@@ -1120,8 +1144,8 @@ async function extractWithGeminiFromPdf({ docType, filePath, pageCount }) {
             { text: prompt },
             {
               inlineData: {
-                mimeType: "application/pdf",
-                data: base64Pdf
+                mimeType,
+                data: base64File
               }
             }
           ]
@@ -1132,7 +1156,7 @@ async function extractWithGeminiFromPdf({ docType, filePath, pageCount }) {
       }
     },
     docType,
-    emptyWarning: "Gemini extracted no events from the uploaded PDF"
+    emptyWarning: "Gemini extracted no events from the uploaded file"
   });
 }
 
@@ -1142,7 +1166,8 @@ async function extractWithOllamaFromPdf({ docType, filePath, pageCount }) {
 
   const prompt = buildExtractionPrompt(docType);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 300000);
+  const timeoutMs = Number(process.env.OLLAMA_TIMEOUT_MS || 120000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch("http://127.0.0.1:11434/api/generate", {
@@ -1182,6 +1207,20 @@ async function extractWithOllamaFromPdf({ docType, filePath, pageCount }) {
 
 async function extractStructuredData({ docType, rawText, filePath, pageCount, provider, structuredData, settings = {} }) {
   const providerErrors = [];
+  const requestedProvider = normalizeTextValue(provider).toLowerCase();
+  const explicitProviderSelected = Boolean(requestedProvider);
+  const withRequestedProviderTag = (result) => {
+    if (!result || requestedProvider !== "azure_vision") {
+      return result;
+    }
+
+    const baseProvider = normalizeTextValue(result.provider).toLowerCase();
+    if (!baseProvider || baseProvider === "azure_vision") {
+      return { ...result, provider: "azure_vision" };
+    }
+
+    return { ...result, provider: `azure_vision+${baseProvider}` };
+  };
 
   // Check if AI processing is disabled via settings
   if (settings.aiEnabled === false) {
@@ -1189,22 +1228,27 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
     return extractLocalEvents({ docType, rawText, structuredData });
   }
 
-  const useFallbacks = settings.useFallbacks !== false;
+  // If user explicitly selected a provider in UI, honor it strictly by default.
+  // Cross-provider fallback can still be opted in via settings.useFallbacks = true.
+  const useFallbacks = explicitProviderSelected
+    ? settings.useFallbacks === true
+    : settings.useFallbacks !== false;
 
   const textProviders = [
     {
       name: "ollama",
-      enabled: provider === "ollama",
+      enabled: requestedProvider === "ollama",
       execute: () => extractWithOllamaFromText({ docType, rawText, model: "qwen2.5vl:3b" })
     },
     {
       name: "gemini",
-      enabled: (provider === "gemini" || !provider) && Boolean(env.ai.gemini.apiKey),
+      // Azure Vision is OCR-only in this app, so structured extraction should use Gemini.
+      enabled: requestedProvider === "gemini" || requestedProvider === "azure_vision" || (!explicitProviderSelected && Boolean(env.ai.gemini.apiKey)),
       execute: () => extractWithGeminiFromText({ docType, rawText })
     },
     {
       name: "groq",
-      enabled: useFallbacks && (provider === "gemini" || !provider) && Boolean(env.ai.groq.apiKey),
+      enabled: (requestedProvider === "groq" || (!explicitProviderSelected && useFallbacks)) && Boolean(env.ai.groq.apiKey),
       execute: () =>
         extractWithOpenAICompatibleFromText({
           providerName: "groq",
@@ -1217,7 +1261,7 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
     },
     {
       name: "openrouter",
-      enabled: useFallbacks && (provider === "gemini" || !provider) && Boolean(env.ai.openrouter.apiKey),
+      enabled: (requestedProvider === "openrouter" || (!explicitProviderSelected && useFallbacks)) && Boolean(env.ai.openrouter.apiKey),
       execute: async () => {
         const modelCandidates = [
           env.ai.openrouter.model,
@@ -1248,16 +1292,14 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
         throw lastError;
       }
     }
-  ]
-    .filter((provider) => provider.enabled)
-    .sort((a, b) => env.ai.providerOrder.indexOf(a.name) - env.ai.providerOrder.indexOf(b.name));
+  ].filter((provider) => provider.enabled);
 
   if (rawText && rawText.trim().length > 0 && textProviders.length > 0) {
     for (const provider of textProviders) {
       try {
         const result = await provider.execute();
         if (result?.events?.length > 0 || Object.keys(result?.structured?.sections || {}).some(k => result.structured.sections[k]?.length > 0)) {
-          return result;
+          return withRequestedProviderTag(result);
         }
         providerErrors.push(`${provider.name}: No events extracted`);
       } catch (error) {
@@ -1269,47 +1311,43 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
   // AI-first logic failed or returned empty results -> fallback to local hybrid heuristics
   const localResult = extractLocalEvents({ docType, rawText, structuredData });
   if (localResult.events.length > 0) {
-    return {
+    return withRequestedProviderTag({
        ...localResult,
        warnings: [
          ...(localResult.warnings || []), 
          "AI extraction failed or returned no events. Using heuristic fallback.",
          `Errors from AI providers during attempt: ${providerErrors.join(" | ")}`
        ]
-    };
+    });
   }
 
   // Fallback: If no text and we have PDF file, try AI-powered PDF extraction
   if ((!rawText || rawText.trim().length === 0) && filePath) {
-    const pdfProviders = [
-      {
-        name: "gemini",
-        enabled: (provider === "gemini" || !provider) && Boolean(env.ai.gemini.apiKey),
-        execute: () => extractWithGeminiFromPdf({ docType, filePath, pageCount })
-      },
+    const fileProviders = [
       {
         name: "ollama",
-        enabled: provider === "ollama",
+        enabled: requestedProvider === "ollama",
         execute: () => extractWithOllamaFromPdf({ docType, filePath, pageCount })
+      },
+      {
+        name: "gemini",
+        enabled: requestedProvider === "gemini" || requestedProvider === "azure_vision" || (!explicitProviderSelected && Boolean(env.ai.gemini.apiKey)),
+        execute: () => extractWithGeminiFromFile({ docType, filePath, pageCount })
       }
-    ]
-      .filter((p) => p.enabled)
-      .slice(0, 1);
+    ].filter((p) => p.enabled);
 
-    if (pdfProviders.length > 0) {
-      for (const provider of pdfProviders) {
-        try {
-          const result = await provider.execute();
-          return result;
-        } catch (error) {
-          providerErrors.push(`${provider.name} (PDF): ${error.message.slice(0, 200)}`);
-        }
+    for (const providerCandidate of fileProviders) {
+      try {
+        const result = await providerCandidate.execute();
+        return withRequestedProviderTag(result);
+      } catch (error) {
+        providerErrors.push(`${providerCandidate.name} (file): ${error.message.slice(0, 200)}`);
       }
     }
 
     // If PDF extraction was attempted but failed
     if (providerErrors.length > 0) {
-      return {
+      return withRequestedProviderTag({
         provider: "stub",
         model: env.ai.gemini.model,
         confidenceScore: 0.05,
@@ -1320,12 +1358,12 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
           "This document may be a scanned image. Ensure GEMINI_API_KEY is valid for image extraction."
         ],
         events: []
-      };
+      });
     }
   }
 
   if (!rawText || rawText.trim().length === 0) {
-    return {
+    return withRequestedProviderTag({
       provider: "stub",
       model: env.ai.gemini.model,
       confidenceScore: 0,
@@ -1339,7 +1377,7 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
         ...(providerErrors.length ? [`Provider errors: ${providerErrors.join(" | ")}`] : [])
       ],
       events: []
-    };
+    });
   }
 
   // Fallback deterministic extraction for exam_timetable (or when Gemini unavailable)
@@ -1367,7 +1405,7 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
     )
   );
 
-  return {
+  return withRequestedProviderTag({
     provider: "stub",
     model: env.ai.gemini.model,
     confidenceScore: events.length > 0 ? 0.4 : 0.15,
@@ -1377,7 +1415,7 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
       ...(events.length > 0 ? [] : [`No ${docType} patterns detected in text`])
     ],
     events
-  };
+  });
 }
 
 module.exports = { extractStructuredData };

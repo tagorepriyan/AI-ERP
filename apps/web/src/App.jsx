@@ -1,16 +1,9 @@
-<<<<<<< HEAD
 import { useEffect, useMemo, useState, useCallback, useRef, lazy, Suspense } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 const LoginPage = lazy(() => import("./LoginPage"));
 const ReviewPanel = lazy(() => import("./ReviewPanel"));
 const ComposeModal = lazy(() => import("./ComposeModal"));
-=======
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
-import LoginPage from "./LoginPage";
-import ReviewPanel from "./ReviewPanel";
-import ComposeModal from "./ComposeModal";
->>>>>>> parent of 60d56c6 (....)
 
 const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
 const APP_SECTIONS = ["dashboard", "documents", "students", "notifications", "settings"];
@@ -57,8 +50,13 @@ export default function App() {
   const historyStatusFilter = HISTORY_STATUSES.includes(statusParam) ? statusParam : "delivered";
 
   const [authed, setAuthed] = useState(() => sessionStorage.getItem("notify_auth") === "1");
+  const authToken = sessionStorage.getItem("notify_token") || "";
   const [tenantId] = useState("default-campus");
-  const headers = useMemo(() => ({ "x-tenant-id": tenantId }), [tenantId]);
+  const headers = useMemo(() => {
+    const h = { "x-tenant-id": tenantId };
+    if (authToken) h["Authorization"] = `Bearer ${authToken}`;
+    return h;
+  }, [tenantId, authToken]);
   const jsonHeaders = useMemo(() => ({ ...headers, "Content-Type": "application/json" }), [headers]);
 
   // ── Data state ──────────────────────────────────────────────────────────────
@@ -67,22 +65,23 @@ export default function App() {
   const [selectedDocId, setSelectedDocId] = useState(null);
   const [selectedDoc, setSelectedDoc] = useState(null);
   const [recipients, setRecipients] = useState([]);
-<<<<<<< HEAD
   const [loadingDocDetail, setLoadingDocDetail] = useState(false);
   const [loadingRecipients, setLoadingRecipients] = useState(false);
   const [recipientsLoadedDocId, setRecipientsLoadedDocId] = useState(null);
   const [docSearch, setDocSearch] = useState("");
-=======
-  const [detailTab, setDetailTab] = useState("intelligence");
->>>>>>> parent of 60d56c6 (....)
   const [error, setError] = useState("");
+  const [showEditDoc, setShowEditDoc] = useState(false);
+  const [editDocId, setEditDocId] = useState(null);
+  const [editDocTitle, setEditDocTitle] = useState("");
+  const [editDocType, setEditDocType] = useState("circular");
+  const [savingDoc, setSavingDoc] = useState(false);
 
   // Upload wizard
   const [showUpload, setShowUpload] = useState(false);
   const [wizStep, setWizStep] = useState(1);
   const [uTitle, setUTitle] = useState("");
   const [uDocType, setUDocType] = useState("circular");
-  const [uProvider, setUProvider] = useState("ollama");
+  const [uProvider, setUProvider] = useState("gemini");
   const [uFile, setUFile] = useState(null);
   const [jobId, setJobId] = useState(null);
   const [jobProgress, setJobProgress] = useState(null);
@@ -98,11 +97,9 @@ export default function App() {
 
   // Notification history
   const [sentHistory, setSentHistory] = useState([]);
-<<<<<<< HEAD
   const [scheduledNotifications, setScheduledNotifications] = useState([]);
-=======
-  const [notiTab, setNotiTab] = useState("queue");
->>>>>>> parent of 60d56c6 (....)
+  const docDetailCacheRef = useRef(new Map());
+  const docDetailAbortRef = useRef(null);
 
   // CSV import
   const csvRef = useRef();
@@ -172,25 +169,67 @@ export default function App() {
     } catch (e) { console.error(e); }
   }, [headers]);
 
-  const fetchDocDetail = useCallback(async (id) => {
+  const fetchDocDetail = useCallback(async (id, options = {}) => {
+    const { force = false, apply = true, signal } = options;
+    const cached = !force ? docDetailCacheRef.current.get(id) : null;
+    if (cached) {
+      if (apply) setSelectedDoc(cached);
+      return cached;
+    }
+
+    if (apply) setLoadingDocDetail(true);
     try {
-      const r = await fetch(`${API}/documents/${id}`, { headers });
+      const r = await fetch(`${API}/documents/${id}`, { headers, signal });
       const d = await r.json();
-      setSelectedDoc(d);
-    } catch (e) { console.error(e); }
+      docDetailCacheRef.current.set(id, d);
+      if (apply) setSelectedDoc(d);
+      return d;
+    } catch (e) {
+      if (e?.name !== "AbortError") console.error(e);
+      return null;
+    } finally {
+      if (apply) setLoadingDocDetail(false);
+    }
   }, [headers]);
 
   const fetchRecipients = useCallback(async (id) => {
     try {
       const r = await fetch(`${API}/notifications/document/${id}`, { headers });
       const d = await r.json();
-      setRecipients(d.notifications || []);
+      const notifications = d.notifications || [];
+      setRecipients(notifications);
+      return notifications;
     } catch (e) { console.error(e); }
+    return [];
   }, [headers]);
+
+  const prefetchDocDetail = useCallback((id) => {
+    if (!id || docDetailCacheRef.current.has(id)) return;
+    fetchDocDetail(id, { apply: false }).catch(() => {});
+  }, [fetchDocDetail]);
 
   const fetchSentHistory = useCallback(async () => {
     try {
       const r = await fetch(`${API}/notifications?status=delivered`, { headers });
+      const d = await r.json();
+      setSentHistory(d.notifications || []);
+    } catch (e) { console.error(e); }
+  }, [headers]);
+
+  const fetchScheduledNotifications = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/notifications?status=scheduled`, { headers });
+      const d = await r.json();
+      setScheduledNotifications(d.notifications || []);
+    } catch (e) { console.error(e); }
+  }, [headers]);
+
+  const fetchNotificationHistory = useCallback(async (status = "delivered") => {
+    try {
+      const url = status === "all"
+        ? `${API}/notifications`
+        : `${API}/notifications?status=${encodeURIComponent(status)}`;
+      const r = await fetch(url, { headers });
       const d = await r.json();
       setSentHistory(d.notifications || []);
     } catch (e) { console.error(e); }
@@ -247,13 +286,27 @@ export default function App() {
     if (selectedDocId === routedDocId) return;
 
     setSelectedDocId(routedDocId || null);
-    setSelectedDoc(null);
     setRecipients([]);
     setRecipientsLoadedDocId(null);
 
-    if (routedDocId) {
-      fetchDocDetail(routedDocId);
+    if (!routedDocId) {
+      setSelectedDoc(null);
+      return;
     }
+
+    const cached = docDetailCacheRef.current.get(routedDocId);
+    setSelectedDoc(cached || null);
+
+    if (docDetailAbortRef.current) {
+      docDetailAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    docDetailAbortRef.current = controller;
+    fetchDocDetail(routedDocId, { signal: controller.signal });
+
+    return () => {
+      controller.abort();
+    };
   }, [authed, selectedDocId, routedDocId, fetchDocDetail]);
 
   useEffect(() => {
@@ -264,12 +317,59 @@ export default function App() {
     return () => { clearInterval(i1); clearInterval(i2); };
   }, [authed]);
 
+  useEffect(() => {
+    if (!authed || view !== "notifications") return;
+    fetchScheduledNotifications();
+    if (notiTab === "history") {
+      fetchNotificationHistory(historyStatusFilter);
+    }
+  }, [authed, view, notiTab, historyStatusFilter, fetchScheduledNotifications, fetchNotificationHistory]);
+
   // ── Derived data ────────────────────────────────────────────────────────────
   const pendingDocs = useMemo(() => docs.filter(d => d.status === "pending_approval"), [docs]);
   const publishedDocs = useMemo(() => docs.filter(d => d.status === "published"), [docs]);
   const extraction = selectedDoc?.latestVersion?.extraction || {};
   const structured = extraction?.structured || {};
   const events = extraction?.events || [];
+  const scheduleRows = Array.isArray(structured.sections?.schedule) ? structured.sections.schedule : [];
+  const scheduleTimeline = useMemo(() => {
+    const source = scheduleRows.length > 0 ? scheduleRows : events;
+    const normalized = source
+      .map((item) => ({
+        date: item?.date || "TBA",
+        startTime: item?.startTime || "",
+        endTime: item?.endTime || "",
+        subjectName: item?.subjectName || item?.title || item?.eventId || "Untitled event",
+        subjectCode: item?.subjectCode || "",
+        instructions: item?.instructions || "",
+        departments: Array.isArray(item?.departments) ? item.departments : [],
+        years: Array.isArray(item?.years) ? item.years : [],
+        sections: Array.isArray(item?.sections) ? item.sections : [],
+        confidence: Number(item?.confidence || 0)
+      }))
+      .filter((item) => item.subjectName || item.subjectCode || item.date !== "TBA");
+
+    const grouped = new Map();
+    normalized.forEach((entry) => {
+      const key = entry.date || "TBA";
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(entry);
+    });
+
+    return Array.from(grouped.entries()).map(([date, items]) => ({ date, items }));
+  }, [scheduleRows, events]);
+  const scheduleStats = useMemo(() => {
+    const allItems = scheduleTimeline.flatMap((bucket) => bucket.items);
+    const departments = new Set();
+    allItems.forEach((item) => (item.departments || []).forEach((dep) => departments.add(dep)));
+
+    return {
+      dayCount: scheduleTimeline.length,
+      eventCount: allItems.length,
+      departmentCount: departments.size,
+      confidence: allItems.length ? Math.round((allItems.reduce((sum, item) => sum + (item.confidence || 0), 0) / allItems.length) * 100) : 0
+    };
+  }, [scheduleTimeline]);
 
   function handleUpload() {
     if (!uFile) return;
@@ -283,7 +383,7 @@ export default function App() {
     // Close the modal immediately so the user is NOT blocked
     setShowUpload(false);
     setWizStep(1);
-    setJobProgress({ pct: 0, label: "Uploading document...", stage: "upload" });
+    setJobProgress({ pct: 8, label: "Preparing upload...", stage: "upload" });
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API}/documents/upload`);
@@ -291,35 +391,48 @@ export default function App() {
     if (authToken) {
       xhr.setRequestHeader("Authorization", `Bearer ${authToken}`);
     }
+    // Disable XHR timeout because slower networks / larger files can legitimately
+    // take longer before the server can acknowledge upload completion.
+    xhr.timeout = 0;
 
-    // Track upload progress natively BEFORE the backend processing even starts
     xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        const percent = Math.round((e.loaded / e.total) * 5); // Upload is first 5% of pipeline
-        setJobProgress(prev => prev ? { ...prev, pct: percent } : null);
-      }
+      if (!e.lengthComputable) return;
+      const percent = 8 + Math.round((e.loaded / e.total) * 52);
+      setJobProgress((prev) => prev ? { ...prev, pct: Math.min(percent, 60), label: "Uploading document..." } : prev);
     };
 
     xhr.onload = () => {
       try {
-        const d = JSON.parse(xhr.responseText);
+        const d = JSON.parse(xhr.responseText || "{}");
         if (xhr.status >= 200 && xhr.status < 300) {
           if (d.jobId) {
             setJobId(d.jobId);
+            setJobProgress((prev) => prev ? { ...prev, pct: Math.max(prev.pct || 0, 68), label: "Upload accepted. Gemini is processing the document...", stage: "processing" } : { pct: 68, label: "Upload accepted. Gemini is processing the document...", stage: "processing" });
           } else {
             setJobProgress({ pct: 100, label: "Done", stage: "done" });
             fetchDocs();
           }
-        } else {
-          setJobProgress({ pct: 0, label: `Error: ${d.error || 'Upload failed'}`, stage: "error" });
+          return;
         }
+
+        setJobProgress({ pct: 0, label: `Error: ${d?.error?.message || d?.error || `Upload failed (HTTP ${xhr.status})`}`, stage: "error" });
       } catch (e) {
-        setJobProgress({ pct: 0, label: `Error parsing response`, stage: "error" });
+        setJobProgress({ pct: 0, label: "Error: Unable to parse upload response", stage: "error" });
       }
     };
 
     xhr.onerror = () => {
-      setJobProgress({ pct: 0, label: `Network error`, stage: "error" });
+      setJobProgress({ pct: 0, label: "Error: Network error while uploading document", stage: "error" });
+    };
+
+    xhr.upload.onload = () => {
+      setJobProgress((prev) => prev
+        ? { ...prev, pct: Math.max(prev.pct || 0, 64), label: "Upload sent. Waiting for server acknowledgement...", stage: "upload" }
+        : { pct: 64, label: "Upload sent. Waiting for server acknowledgement...", stage: "upload" });
+    };
+
+    xhr.ontimeout = () => {
+      setJobProgress({ pct: 0, label: "Error: Upload timed out before server accepted the file", stage: "error" });
     };
 
     xhr.send(fd);
@@ -338,10 +451,33 @@ export default function App() {
   useEffect(() => {
     if (!jobId) return;
     let active = true;
+    let consecutiveFailures = 0;
+
     const poll = async () => {
       try {
         const r = await fetch(`${API}/jobs/${jobId}`, { headers });
-        if (!r.ok) return;
+        if (!r.ok) {
+          consecutiveFailures += 1;
+          if (active && consecutiveFailures >= 20) {
+            setJobProgress((prev) => prev ? {
+              ...prev,
+              stage: "error",
+              label: `Error: Unable to read job progress (HTTP ${r.status})`,
+              pct: 0
+            } : prev);
+            return;
+          }
+          if (active) {
+            setJobProgress((prev) => prev ? {
+              ...prev,
+              label: `Waiting for processor... (HTTP ${r.status})`
+            } : prev);
+            setTimeout(poll, 1000);
+          }
+          return;
+        }
+
+        consecutiveFailures = 0;
         const job = await r.json();
         if (active) setJobProgress(job);
         if (job.stage === "done" || job.stage === "error") {
@@ -349,13 +485,30 @@ export default function App() {
           return;
         }
         if (active) setTimeout(poll, 800);
-      } catch { if (active) setTimeout(poll, 2000); }
+      } catch {
+        consecutiveFailures += 1;
+        if (active && consecutiveFailures >= 20) {
+          setJobProgress((prev) => prev ? {
+            ...prev,
+            stage: "error",
+            label: "Error: Lost connection while reading job progress",
+            pct: 0
+          } : prev);
+          return;
+        }
+        if (active) {
+          setJobProgress((prev) => prev ? {
+            ...prev,
+            label: "Reconnecting to processor..."
+          } : prev);
+          setTimeout(poll, 2000);
+        }
+      }
     };
     poll();
     return () => { active = false; };
   }, [jobId]);
 
-<<<<<<< HEAD
   async function prepareReviewContext(doc) {
     if (!doc?.id) return null;
 
@@ -409,21 +562,12 @@ export default function App() {
       }
       await fetchDocs();
       if (selectedDocId === docId) {
-        await fetchDocDetail(docId);
+        docDetailCacheRef.current.delete(docId);
+        await fetchDocDetail(docId, { force: true });
         if (detailTab === "recipients") await fetchRecipients(docId);
       }
     } catch (e) {
       setError(e.message || "Failed to approve document");
-=======
-  function openReview(doc) {
-    // For a doc from the list (minimal data), fetch full detail first
-    if (selectedDocId === doc.id) {
-      setShowReview({ doc, extraction, recipients });
-    } else {
-      selectDoc(doc.id);
-      // Small delay to let data load
-      setTimeout(() => setShowReview({ doc, extraction: null, recipients: [] }), 200);
->>>>>>> parent of 60d56c6 (....)
     }
   }
 
@@ -436,22 +580,24 @@ export default function App() {
       navigate("/documents");
     }
     fetchDocs();
-<<<<<<< HEAD
     if (selectedDocId) {
-      fetchDocDetail(selectedDocId);
+      docDetailCacheRef.current.delete(selectedDocId);
+      fetchDocDetail(selectedDocId, { force: true });
       if (detailTab === "recipients") fetchRecipients(selectedDocId);
     }
   }
 
   function openEditDocument() {
     if (!selectedDoc?.document) return;
+    setEditDocId(selectedDoc.document.id);
     setEditDocTitle(selectedDoc.document.title || "");
     setEditDocType(selectedDoc.document.docType || "circular");
     setShowEditDoc(true);
   }
 
   async function saveDocumentChanges() {
-    if (!selectedDoc?.document?.id || savingDoc) return;
+    const targetId = editDocId || selectedDoc?.document?.id;
+    if (!targetId || savingDoc) return;
     const title = editDocTitle.trim();
     if (!title) {
       setError("Document title cannot be empty");
@@ -459,7 +605,7 @@ export default function App() {
     }
     setSavingDoc(true);
     try {
-      const r = await fetch(`${API}/documents/${selectedDoc.document.id}`, {
+      const r = await fetch(`${API}/documents/${targetId}`, {
         method: "PATCH",
         headers: jsonHeaders,
         body: JSON.stringify({ title, docType: editDocType })
@@ -468,9 +614,13 @@ export default function App() {
       if (!r.ok) throw new Error(d?.error?.message || "Failed to update document");
 
       setShowEditDoc(false);
+      setEditDocId(null);
       await fetchDocs();
-      await fetchDocDetail(selectedDoc.document.id);
-      if (detailTab === "recipients") await fetchRecipients(selectedDoc.document.id);
+      docDetailCacheRef.current.delete(targetId);
+      if (selectedDoc?.document?.id === targetId) {
+        await fetchDocDetail(targetId, { force: true });
+        if (detailTab === "recipients") await fetchRecipients(targetId);
+      }
     } catch (e) {
       setError(e.message || "Failed to update document");
     } finally {
@@ -496,13 +646,12 @@ export default function App() {
         setRecipients([]);
         setRecipientsLoadedDocId(null);
       }
+      docDetailCacheRef.current.delete(docId);
+      if (editDocId === docId) setEditDocId(null);
       await fetchDocs();
     } catch (e) {
       setError(e.message || "Failed to delete document");
     }
-=======
-    if (selectedDocId) { fetchDocDetail(selectedDocId); fetchRecipients(selectedDocId); }
->>>>>>> parent of 60d56c6 (....)
   }
 
   async function seedStudents() {
@@ -522,7 +671,11 @@ export default function App() {
   }
 
   function selectDoc(id) {
-<<<<<<< HEAD
+    const cached = docDetailCacheRef.current.get(id);
+    if (cached) {
+      setSelectedDocId(id);
+      setSelectedDoc(cached);
+    }
     navigate(`/documents/${encodeURIComponent(id)}`);
   }
 
@@ -550,28 +703,13 @@ export default function App() {
   if (!authed) {
     return (
       <Suspense fallback={<div className="app-loading">Loading login...</div>}>
-<<<<<<< HEAD
         <LoginPage onLogin={(payload) => {
-          setToken(payload?.token || sessionStorage.getItem("notify_token") || "");
           setAuthed(true);
           navigate("/dashboard", { replace: true });
         }} />
-=======
-        <LoginPage onLogin={() => setAuthed(true)} />
->>>>>>> parent of 79c88fa (lwt auth)
       </Suspense>
     );
   }
-=======
-    setSelectedDocId(id);
-    fetchDocDetail(id);
-    fetchRecipients(id);
-    setDetailTab("intelligence");
-    if (view !== "documents") setView("documents");
-  }
-
-  if (!authed) return <LoginPage onLogin={() => setAuthed(true)} />;
->>>>>>> parent of 60d56c6 (....)
 
   // ── Nav items ───────────────────────────────────────────────────────────────
   const navItems = [
@@ -649,11 +787,7 @@ export default function App() {
           <div className={`ai-dot ${aiStatus}`} />
           <span className="ai-label">{aiStatus === "online" ? "AI ON" : aiStatus === "checking" ? "..." : "OFF"}</span>
         </div>
-<<<<<<< HEAD
-        <button className="nav-item" onClick={() => { sessionStorage.removeItem("notify_auth"); sessionStorage.removeItem("notify_token"); setToken(""); setAuthed(false); navigate("/login", { replace: true }); }} title="Logout">🚪</button>
-=======
-        <button className="nav-item" onClick={() => { sessionStorage.removeItem("notify_auth"); setAuthed(false); }} title="Logout">🚪</button>
->>>>>>> parent of 79c88fa (lwt auth)
+        <button className="nav-item" onClick={() => { sessionStorage.removeItem("notify_auth"); sessionStorage.removeItem("notify_token"); setAuthed(false); navigate("/login", { replace: true }); }} title="Logout">🚪</button>
       </nav>
 
       {/* ── Context Panel ─────────────────────────────────────── */}
@@ -668,12 +802,18 @@ export default function App() {
           </div>
           <div className="panel-body">
             {docs.map(doc => (
-              <div key={doc.id} className={`doc-item ${selectedDocId === doc.id ? "active" : ""}`} onClick={() => selectDoc(doc.id)}>
-                <div className="doc-item-title">{doc.title}</div>
-                <div className="doc-item-meta">
-                  <span className={`badge ${doc.status}`}>{doc.status.replace(/_/g, " ")}</span>
-                  <span className="badge secondary">{doc.docType}</span>
-                  {doc.recipientCount > 0 && <span className="text-sm text-muted">👥 {doc.recipientCount}</span>}
+              <div key={doc.id} className={`doc-item ${selectedDocId === doc.id ? "active" : ""}`} onMouseEnter={() => prefetchDocDetail(doc.id)} onClick={() => selectDoc(doc.id)}>
+                <div className="doc-item-main">
+                  <div className="doc-item-title">{doc.title}</div>
+                  <div className="doc-item-meta">
+                    <span className={`badge ${doc.status}`}>{doc.status.replace(/_/g, " ")}</span>
+                    <span className="badge secondary">{doc.docType}</span>
+                    {doc.recipientCount > 0 && <span className="text-sm text-muted">👥 {doc.recipientCount}</span>}
+                  </div>
+                </div>
+                <div className="doc-item-actions" onClick={(e) => e.stopPropagation()}>
+                  <button className="icon-btn" title="Edit document" onClick={() => { setSelectedDocId(doc.id); setEditDocId(doc.id); setEditDocTitle(doc.title || ""); setEditDocType(doc.docType || "circular"); setShowEditDoc(true); selectDoc(doc.id); }}>✎</button>
+                  <button className="icon-btn danger" title="Delete document" onClick={() => deleteDocument(doc.id)}>🗑</button>
                 </div>
               </div>
             ))}
@@ -738,7 +878,11 @@ export default function App() {
         {view === "documents" && (
           <>
             {!selectedDoc ? (
+              selectedDocId && loadingDocDetail ? (
+                <div className="empty-state" style={{ flex: 1 }}><div className="empty-state-icon">⏳</div><h3>Loading document...</h3><p>Fetching AI analysis and routing details.</p></div>
+              ) : (
               <div className="empty-state" style={{ flex: 1 }}><div className="empty-state-icon">📄</div><h3>Select a document</h3><p>Choose a document from the sidebar to view its AI analysis and routing details.</p></div>
+              )
             ) : (
               <div className="detail-shell">
                 <div className="detail-header">
@@ -749,8 +893,10 @@ export default function App() {
                         {selectedDoc.document.docType?.toUpperCase()} · Provider: {extraction.provider || "N/A"} · {fmtDate(selectedDoc.document.createdAt)}
                       </div>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2" style={{ alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
                       <span className={`badge ${selectedDoc.document.status}`}>{selectedDoc.document.status?.replace(/_/g, " ")}</span>
+                      <button className="btn btn-ghost btn-sm" onClick={openEditDocument}>✎ Edit</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => deleteDocument(selectedDoc.document.id)}>🗑 Delete</button>
                       {selectedDoc.document.status === "pending_approval" && (
                         <button className="btn btn-warning btn-sm" onClick={() => openReview({ id: selectedDoc.document.id, ...selectedDoc.document })}>Review & Approve</button>
                       )}
@@ -766,7 +912,6 @@ export default function App() {
                       </div>
                       <div className="approval-banner-actions">
                         <button className="btn btn-success btn-sm" onClick={() => approveDoc(selectedDoc.document.id)}>✓ Approve</button>
-<<<<<<< HEAD
                         <button
                           className="btn btn-danger btn-sm"
                           onClick={async () => {
@@ -779,16 +924,12 @@ export default function App() {
                         >
                           ✕ Reject
                         </button>
-=======
-                        <button className="btn btn-danger btn-sm" onClick={() => setShowApproval(selectedDoc.document)}>✕ Reject</button>
->>>>>>> parent of 60d56c6 (....)
                       </div>
                     </div>
                   )}
 
                   <div className="detail-tabs">
-                    {["intelligence", "schedule", "routing", "recipients", "raw"].map(t => (
-<<<<<<< HEAD
+                    {["file", "intelligence", "schedule", "routing", "recipients", "raw"].map(t => (
                       <button
                         key={t}
                         className={`detail-tab ${detailTab === t ? "active" : ""}`}
@@ -799,23 +940,36 @@ export default function App() {
                           }
                         }}
                       >
-=======
-                      <button key={t} className={`detail-tab ${detailTab === t ? "active" : ""}`} onClick={() => { setDetailTab(t); if (t === "recipients") fetchRecipients(selectedDocId); }}>
->>>>>>> parent of 60d56c6 (....)
-                        {t === "intelligence" ? "🧠 Intelligence" : t === "schedule" ? "📅 Schedule" : t === "routing" ? "🔀 Routing" : t === "recipients" ? `👥 Recipients (${recipients.length})` : "{ } Raw Data"}
+                        {t === "file" ? "📄 File" : t === "intelligence" ? "🧠 Intelligence" : t === "schedule" ? "📅 Schedule" : t === "routing" ? "🔀 Routing" : t === "recipients" ? `👥 Recipients (${recipients.length})` : "{ } Raw Data"}
                       </button>
                     ))}
                   </div>
                 </div>
 
                 <div className="detail-body">
+                  {/* FILE VIEWER */}
+                  {detailTab === "file" && (
+                    <div className="file-viewer-wrapper" style={{ height: "100%", minHeight: "600px", background: "var(--main-bg)", borderRadius: 8, overflow: "hidden" }}>
+                      {selectedDoc?.document?.id ? (
+                        <iframe
+                          key={selectedDoc.document.id}
+                          src={`${API}/documents/${selectedDoc.document.id}/file?token=${authToken}`}
+                          style={{ width: "100%", height: "100%", border: "none" }}
+                          title={selectedDoc.document.title}
+                        />
+                      ) : (
+                        <div className="empty-state">File unavailable</div>
+                      )}
+                    </div>
+                  )}
+
                   {/* INTELLIGENCE */}
                   {detailTab === "intelligence" && (
                     <>
                       <div className="intelligence-grid">
                         <div className="intel-card">
                           <div className="intel-card-label">Document Title</div>
-                          <div className="intel-card-value">{structured.title || selectedDoc.document.title}</div>
+                          <div className="intel-card-value">{selectedDoc.document.title || structured.title}</div>
                         </div>
                         <div className="intel-card">
                           <div className="intel-card-label">Date</div>
@@ -856,23 +1010,100 @@ export default function App() {
 
                   {/* SCHEDULE */}
                   {detailTab === "schedule" && (
-                    <div className="data-table-wrap">
-                      <table className="data-table">
-                        <thead><tr><th>Event</th><th>Date</th><th>Time</th><th>Scope</th><th>Instructions</th><th>Conf.</th></tr></thead>
-                        <tbody>
-                          {events.map((ev, i) => (
-                            <tr key={i}>
-                              <td><strong>{ev.subjectName || ev.eventId || "-"}</strong></td>
-                              <td>{ev.date || "TBA"}</td>
-                              <td>{ev.startTime || "-"}{ev.endTime ? ` → ${ev.endTime}` : ""}</td>
-                              <td>{(ev.departments || []).concat(ev.years || []).join(", ") || "-"}</td>
-                              <td style={{ fontSize: 12, maxWidth: 200 }}>{ev.instructions || "-"}</td>
-                              <td><span className={`badge ${(ev.confidence||0) > 0.7 ? "success" : "warning"}`}>{((ev.confidence||0)*100).toFixed(0)}%</span></td>
-                            </tr>
-                          ))}
-                          {events.length === 0 && <tr><td colSpan={6} className="text-sm text-muted" style={{ textAlign: "center", padding: 40 }}>No schedule events extracted.</td></tr>}
-                        </tbody>
-                      </table>
+                    <div className="schedule-workspace">
+                      <div className="schedule-hero">
+                        <div>
+                          <div className="schedule-eyebrow">📅 Schedule Intelligence</div>
+                          <h3>{structured.title || selectedDoc.document.title}</h3>
+                          <p>{structured.summary || "The extracted timetable is grouped by day for faster review, approval, and routing checks."}</p>
+                        </div>
+                        <div className="schedule-hero-pill">
+                          <span className={`badge ${extraction.provider}`}>{extraction.provider || "unknown"}</span>
+                          <span className="badge secondary">{scheduleStats.eventCount} events</span>
+                        </div>
+                      </div>
+
+                      <div className="schedule-stats-grid">
+                        <div className="intel-card compact"><div className="intel-card-label">Days Covered</div><div className="intel-card-value">{scheduleStats.dayCount}</div></div>
+                        <div className="intel-card compact"><div className="intel-card-label">Events Extracted</div><div className="intel-card-value">{scheduleStats.eventCount}</div></div>
+                        <div className="intel-card compact"><div className="intel-card-label">Departments</div><div className="intel-card-value">{scheduleStats.departmentCount || "-"}</div></div>
+                        <div className="intel-card compact"><div className="intel-card-label">Avg Confidence</div><div className="intel-card-value">{scheduleStats.confidence}%</div></div>
+                      </div>
+
+                      <div className="schedule-grid">
+                        <div className="schedule-panel schedule-panel-primary">
+                          <div className="schedule-panel-header">
+                            <div>
+                              <div className="schedule-panel-title">Grouped by Date</div>
+                              <div className="schedule-panel-subtitle">Each card represents all extracted rows for a single day.</div>
+                            </div>
+                          </div>
+                          <div className="schedule-timeline">
+                            {scheduleTimeline.length > 0 ? scheduleTimeline.map((bucket, bucketIndex) => (
+                              <div key={bucketIndex} className="schedule-day-card">
+                                <div className="schedule-day-header">
+                                  <div>
+                                    <div className="schedule-day-date">{bucket.date || "TBA"}</div>
+                                    <div className="schedule-day-meta">{bucket.items.length} item{bucket.items.length > 1 ? "s" : ""} extracted</div>
+                                  </div>
+                                  <span className="badge secondary">Day {bucketIndex + 1}</span>
+                                </div>
+                                <div className="schedule-day-list">
+                                  {bucket.items.map((item, itemIndex) => (
+                                    <div key={itemIndex} className="schedule-entry">
+                                      <div className="schedule-entry-main">
+                                        <div className="schedule-entry-title">{item.subjectName || item.subjectCode || item.eventId || "Untitled event"}</div>
+                                        <div className="schedule-entry-subtitle">
+                                          {(item.departments || []).concat(item.years || []).concat(item.sections || []).filter(Boolean).join(" • ") || "General audience"}
+                                        </div>
+                                      </div>
+                                      <div className="schedule-entry-meta">
+                                        <span className="badge secondary">{item.startTime || "TBA"}{item.endTime ? ` → ${item.endTime}` : ""}</span>
+                                        <span className={`badge ${(item.confidence || 0) > 0.7 ? "success" : "warning"}`}>{((item.confidence || 0) * 100).toFixed(0)}%</span>
+                                      </div>
+                                      {item.instructions && <div className="schedule-entry-note">{item.instructions}</div>}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )) : (
+                              <div className="empty-state schedule-empty">
+                                <div className="empty-state-icon">🗓</div>
+                                <h3>No schedule events extracted</h3>
+                                <p>The document was processed, but no timetable rows were detected.</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="schedule-panel schedule-panel-secondary">
+                          <div className="schedule-panel-header">
+                            <div>
+                              <div className="schedule-panel-title">Snapshot</div>
+                              <div className="schedule-panel-subtitle">Useful at a glance for approval and sharing.</div>
+                            </div>
+                          </div>
+                          <div className="schedule-snapshot-list">
+                            {(events.length > 0 ? events : scheduleRows.flatMap((row, rowIndex) => {
+                              const subjects = Array.isArray(row?.subjects) ? row.subjects : [];
+                              return subjects.map((subject, subjectIndex) => ({
+                                date: row?.date || "TBA",
+                                subjectName: subject?.subjectName || subject?.subject || "Untitled",
+                                subjectCode: subject?.subjectCode || subject?.code || "",
+                                departments: [subject?.department].filter(Boolean),
+                                confidence: 0.9,
+                                key: `${rowIndex}-${subjectIndex}`
+                              }));
+                            })).slice(0, 8).map((item, index) => (
+                              <div key={item.key || index} className="schedule-snapshot-item">
+                                <div className="schedule-snapshot-date">{item.date || "TBA"}</div>
+                                <div className="schedule-snapshot-title">{item.subjectName || item.subjectCode || "Untitled event"}</div>
+                                <div className="schedule-snapshot-meta">{(item.departments || []).join(", ") || "General"}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   )}
 
@@ -978,15 +1209,9 @@ export default function App() {
             <div className="main-header">
               <div><h2>Notifications</h2><p>Review queue and delivery history</p></div>
               <div className="flex gap-2">
-<<<<<<< HEAD
                 <button className="btn btn-primary btn-sm" onClick={openCompose}>✍️ Compose</button>
                 <button className={`btn ${notiTab === "queue" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => { setNotificationsRouteState("queue", historyStatusFilter); fetchScheduledNotifications(); }}>⏳ Queue ({pendingDocs.length + scheduledNotifications.length})</button>
                 <button className={`btn ${notiTab === "history" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => { setNotificationsRouteState("history", historyStatusFilter); fetchNotificationHistory(historyStatusFilter); }}>✅ History</button>
-=======
-                <button className="btn btn-primary btn-sm" onClick={() => setShowCompose(true)}>✍️ Compose</button>
-                <button className={`btn ${notiTab === "queue" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => setNotiTab("queue")}>⏳ Queue ({pendingDocs.length})</button>
-                <button className={`btn ${notiTab === "sent" ? "btn-primary" : "btn-ghost"} btn-sm`} onClick={() => { setNotiTab("sent"); fetchSentHistory(); }}>✅ History</button>
->>>>>>> parent of 60d56c6 (....)
               </div>
             </div>
             <div className="main-body">
@@ -1010,9 +1235,8 @@ export default function App() {
                   ))}
                 </>
               )}
-              {notiTab === "sent" && (
+              {notiTab === "history" && (
                 <div className="data-table-wrap">
-<<<<<<< HEAD
                   <div className="flex gap-2 mb-3" style={{ flexWrap: "wrap" }}>
                     {[
                       ["delivered", "Delivered"],
@@ -1031,8 +1255,6 @@ export default function App() {
                       </button>
                     ))}
                   </div>
-=======
->>>>>>> parent of 60d56c6 (....)
                   <table className="data-table">
                     <thead><tr><th>Document</th><th>Recipient</th><th>Department</th><th>Conditions</th><th>Delivered At</th></tr></thead>
                     <tbody>
@@ -1067,6 +1289,7 @@ export default function App() {
                     <select className="form-select" value={uProvider} onChange={e => setUProvider(e.target.value)}>
                       <option value="ollama">Local AI (Qwen2.5-VL 3B via Ollama)</option>
                       <option value="gemini">Cloud AI (Gemini)</option>
+                      <option value="azure_vision">Azure Computer Vision OCR + Cloud AI</option>
                     </select>
                   </div>
                   <div className="flex items-center gap-3 mt-3">
@@ -1125,7 +1348,7 @@ export default function App() {
                 <>
                   <div className="form-group"><label className="form-label">Title</label><input className="form-input" value={uTitle} onChange={e => setUTitle(e.target.value)} placeholder="Document title" /></div>
                   <div className="form-group"><label className="form-label">Type</label><select className="form-select" value={uDocType} onChange={e => setUDocType(e.target.value)}><option value="circular">Circular</option><option value="exam_timetable">Timetable</option><option value="notice">Notice</option></select></div>
-                  <div className="form-group"><label className="form-label">AI Model</label><select className="form-select" value={uProvider} onChange={e => setUProvider(e.target.value)}><option value="ollama">Local AI (Mistral)</option><option value="gemini">Cloud AI (Gemini)</option></select></div>
+                  <div className="form-group"><label className="form-label">AI Model</label><select className="form-select" value={uProvider} onChange={e => setUProvider(e.target.value)}><option value="ollama">Local AI (Qwen2.5-VL 3B via Ollama)</option><option value="gemini">Cloud AI (Gemini)</option><option value="azure_vision">Azure Computer Vision OCR + Cloud AI</option></select></div>
                   <button className="btn btn-primary btn-full mt-3" onClick={() => setWizStep(2)}>Next →</button>
                 </>
               )}
@@ -1133,8 +1356,8 @@ export default function App() {
               {wizStep === 2 && (
                 <>
                   <div className="form-group">
-                    <label className="form-label">Select PDF File</label>
-                    <input type="file" accept=".pdf" className="form-input" onChange={e => setUFile(e.target.files?.[0] || null)} />
+                    <label className="form-label">Select File (PDF, image, or text)</label>
+                    <input type="file" accept=".pdf,image/*,.txt,.md,.csv,.json,.log" className="form-input" onChange={e => setUFile(e.target.files?.[0] || null)} />
                   </div>
                   <div className="flex gap-2 mt-3">
                     <button className="btn btn-ghost" onClick={() => setWizStep(1)}>← Back</button>
@@ -1147,6 +1370,39 @@ export default function App() {
         </div>
       )}
 
+      {/* ═══ EDIT DOCUMENT MODAL ═══ */}
+      {showEditDoc && (
+        <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget && !savingDoc) { setShowEditDoc(false); setEditDocId(null); } }}>
+          <div className="modal">
+            <div className="modal-header">
+              <div className="modal-title">✎ Edit Document</div>
+              <button className="btn btn-ghost btn-sm" onClick={() => { if (!savingDoc) { setShowEditDoc(false); setEditDocId(null); } }}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div className="form-group">
+                <label className="form-label">Title</label>
+                <input className="form-input" value={editDocTitle} onChange={e => setEditDocTitle(e.target.value)} placeholder="Document title" />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Type</label>
+                <select className="form-select" value={editDocType} onChange={e => setEditDocType(e.target.value)}>
+                  <option value="circular">Circular</option>
+                  <option value="exam_timetable">Timetable</option>
+                  <option value="notice">Notice</option>
+                  <option value="fee_reminder">Fee reminder</option>
+                  <option value="general">General</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div className="flex gap-2 mt-3">
+                <button className="btn btn-ghost" disabled={savingDoc} onClick={() => { setShowEditDoc(false); setEditDocId(null); }}>Cancel</button>
+                <button className="btn btn-primary" disabled={savingDoc} onClick={saveDocumentChanges} style={{ flex: 1 }}>{savingDoc ? "Saving..." : "Save Changes"}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ═══ FLOATING PROGRESS WIDGET (non-blocking) ═══ */}
       {jobProgress && (
         <div className="floating-progress">
@@ -1154,6 +1410,11 @@ export default function App() {
             <div className={`progress-step-label ${jobProgress.stage !== "done" && jobProgress.stage !== "error" ? "spinning" : ""}`}>
               {jobProgress.stage === "done" ? "✅" : jobProgress.stage === "error" ? "❌" : "🔔"} {jobProgress.label || "Processing..."}
             </div>
+            {jobProgress.stage === "processing" && (
+              <div className="text-sm text-muted" style={{ marginTop: 4, width: "100%" }}>
+                The file is uploaded. Gemini/OCR is now running and may take a while on scanned PDFs.
+              </div>
+            )}
             {(jobProgress.stage !== "done" && jobProgress.stage !== "error") && (
               <button className="btn btn-ghost btn-sm text-danger" style={{ padding: "2px 6px", fontSize: 11 }} onClick={cancelJob}>✕ Cancel</button>
             )}
@@ -1173,7 +1434,6 @@ export default function App() {
 
       {/* ═══ REVIEW PANEL (replaces old approval modal) ═══ */}
       {showReview && (
-<<<<<<< HEAD
         <Suspense fallback={<div className="modal-overlay"><div className="modal">Loading review panel...</div></div>}>
           <ReviewPanel
             tenantId={tenantId}
@@ -1199,34 +1459,11 @@ export default function App() {
         <Suspense fallback={<div className="modal-overlay"><div className="modal">Loading composer...</div></div>}>
           <ComposeModal
             tenantId={tenantId}
-<<<<<<< HEAD
-            authToken={token}
+            authToken={authToken}
             onClose={closeCompose}
-=======
-            onClose={() => setShowCompose(false)}
->>>>>>> parent of 79c88fa (lwt auth)
             onSent={() => { fetchDocs(); fetchScheduledNotifications(); fetchNotificationHistory(historyStatusFilter); }}
           />
         </Suspense>
-=======
-        <ReviewPanel
-          tenantId={tenantId}
-          doc={showReview.doc}
-          extraction={showReview.extraction || extraction}
-          recipients={showReview.recipients || recipients}
-          onAction={handleReviewAction}
-          onClose={() => setShowReview(null)}
-        />
-      )}
-
-      {/* ═══ COMPOSE MODAL ═══ */}
-      {showCompose && (
-        <ComposeModal
-          tenantId={tenantId}
-          onClose={() => setShowCompose(false)}
-          onSent={() => { fetchDocs(); fetchSentHistory(); }}
-        />
->>>>>>> parent of 60d56c6 (....)
       )}
 
       {/* ═══ ERROR TOAST ═══ */}

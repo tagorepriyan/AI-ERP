@@ -25,10 +25,10 @@ async function processUploadedDocument({
   const emit = (stage, label) => { if (jobId) updateJob(jobId, stage, label); };
   const signal = jobId ? getJobSignal(jobId) : undefined;
 
-  emit("parse", "Parsing PDF structure...");
+  emit("parse", "Extracting text and structure...");
   const skipHybridOcr = workflowSettings.skipHybridOcr === true;
   const bypassPdfParse = workflowSettings.bypassPdfParse === true;
-  const parserResult = await parsePdf(file.path, signal, skipHybridOcr, bypassPdfParse);
+  const parserResult = await parsePdf(file.path, signal, skipHybridOcr, bypassPdfParse, provider);
   const checksum = sha1(`${file.originalname}:${file.size}:${parserResult.rawText.slice(0, 2000)}`);
 
   const document = await Document.create({

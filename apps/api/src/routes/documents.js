@@ -1,5 +1,6 @@
 const path = require("path");
 const crypto = require("crypto");
+const fs = require("fs/promises");
 
 const express = require("express");
 const multer = require("multer");
@@ -17,7 +18,11 @@ const router = express.Router();
 
 const upload = multer({
   dest: path.resolve(process.cwd(), env.uploadDir),
-  limits: { fileSize: 20 * 1024 * 1024 }
+  // Allow larger files to accommodate scanned PDFs and high-resolution images.
+  limits: { 
+    fileSize: 250 * 1024 * 1024,
+    fieldSize: 50 * 1024 * 1024
+  }
 });
 
 // ── POST /documents/upload ─────────────────────────────────────────────────────
@@ -37,14 +42,14 @@ router.post("/upload", upload.single("file"), async (req, res, next) => {
       if (req.body.settings) workflowSettings = JSON.parse(req.body.settings);
     } catch(e) {}
 
+    // Create the job before returning so the first frontend poll can always find it.
+    createJob(jobId);
+
     // Return jobId immediately so frontend can start polling
     res.status(202).json({ jobId, message: "Processing started" });
 
-    // Process asynchronously
-    createJob(jobId);
-
     try {
-      updateJob(jobId, "parse", "Parsing PDF structure...");
+      updateJob(jobId, "parse", "Extracting text and structure...");
       const result = await processUploadedDocument({
         tenantId: req.tenantId,
         title,
@@ -150,6 +155,49 @@ router.get("/:id", async (req, res, next) => {
     });
   } catch (error) {
     return next(error);
+  }
+});
+
+// ── GET /documents/:id/file ──────────────────────────────────────────────────
+router.get("/:id/file", async (req, res, next) => {
+  try {
+    const doc = await Document.findOne({ _id: req.params.id, tenantId: req.tenantId });
+    if (!doc || !doc.storagePath) {
+      return res.status(404).json({ error: { message: "File not found or no file attached" } });
+    }
+
+    const absolutePath = path.isAbsolute(doc.storagePath)
+      ? doc.storagePath
+      : path.resolve(process.cwd(), doc.storagePath);
+
+    const ext = path.extname(doc.sourceFileName || "").toLowerCase();
+    const mimeTypes = {
+      ".pdf": "application/pdf",
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".csv": "text/csv",
+      ".txt": "text/plain"
+    };
+
+    if (mimeTypes[ext]) {
+      res.setHeader("Content-Type", mimeTypes[ext]);
+    } else if (doc.sourceFileName && doc.sourceFileName.toLowerCase().endsWith(".pdf")) {
+      res.setHeader("Content-Type", "application/pdf");
+    }
+
+    // Force inline viewing rather than download
+    res.setHeader("Content-Disposition", `inline; filename="${doc.sourceFileName || 'document.pdf'}"`);
+
+    res.sendFile(absolutePath, (err) => {
+      if (err) {
+        if (!res.headersSent) {
+          res.status(500).json({ error: { message: "Error serving file" } });
+        }
+      }
+    });
+  } catch (error) {
+    next(error);
   }
 });
 
@@ -282,6 +330,74 @@ router.post("/:id/reject", async (req, res, next) => {
     res.json({ success: true, document: { id: doc._id, status: doc.status } });
   } catch (err) {
     next(err);
+  }
+});
+
+
+// ── PATCH /documents/:id ─────────────────────────────────────────────────────
+router.patch("/:id", async (req, res, next) => {
+  try {
+    const { title, docType } = req.body;
+    const update = {};
+
+    if (typeof title === "string") {
+      const trimmedTitle = title.trim();
+      if (!trimmedTitle) {
+        return res.status(400).json({ error: { message: "title cannot be empty" } });
+      }
+      update.title = trimmedTitle;
+    }
+
+    if (typeof docType === "string" && docType.trim()) {
+      update.docType = docType.trim();
+    }
+
+    if (!Object.keys(update).length) {
+      return res.status(400).json({ error: { message: "No valid fields provided" } });
+    }
+
+    const doc = await Document.findOneAndUpdate(
+      { _id: req.params.id, tenantId: req.tenantId },
+      { $set: update },
+      { new: true, runValidators: true }
+    ).lean();
+
+    if (!doc) {
+      return res.status(404).json({ error: { message: "Document not found" } });
+    }
+
+    res.json({ success: true, document: doc });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── DELETE /documents/:id ────────────────────────────────────────────────────
+router.delete("/:id", async (req, res, next) => {
+  try {
+    const doc = await Document.findOne({ _id: req.params.id, tenantId: req.tenantId });
+    if (!doc) {
+      return res.status(404).json({ error: { message: "Document not found" } });
+    }
+
+    await Promise.all([
+      DocumentVersion.deleteMany({ tenantId: req.tenantId, documentId: doc._id }),
+      NotificationLog.deleteMany({ tenantId: req.tenantId, documentId: doc._id })
+    ]);
+
+    if (doc.storagePath) {
+      const absoluteStoragePath = path.isAbsolute(doc.storagePath)
+        ? doc.storagePath
+        : path.resolve(process.cwd(), doc.storagePath);
+
+      await fs.unlink(absoluteStoragePath).catch(() => {});
+    }
+
+    await doc.deleteOne();
+
+    res.json({ success: true, deletedId: doc._id.toString() });
+  } catch (error) {
+    next(error);
   }
 });
 
