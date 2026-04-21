@@ -114,10 +114,13 @@ def process_pdf(file_path):
                     if row_obj["exams"]:
                         extracted_rows.append(row_obj)
 
+                # Concatenate all OCR text for indexing and AI use
+                ocr_text = " ".join(b['text'] for b in sorted(boxes, key=lambda b: (b['y'], b['x'])))
+                
                 full_output.append({
                     "page": page_num + 1,
                     "rows": extracted_rows,
-                    "rawText": page.extract_text() or ""
+                    "rawText": norm((page.extract_text() or "") + "\n" + ocr_text)
                 })
 
         print(json.dumps({

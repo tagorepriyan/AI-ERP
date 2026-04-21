@@ -59,12 +59,21 @@ const env = {
       model: process.env.OPENROUTER_MODEL || "meta-llama/llama-3.1-8b-instruct:free",
       baseUrl: process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1"
     },
+    ollama: {
+      baseUrl: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434",
+      model: process.env.OLLAMA_MODEL || "gemma4:e2b",
+      timeoutMs: Number(process.env.OLLAMA_TIMEOUT_MS || 600000),
+      maxPdfPages: Number(process.env.OLLAMA_MAX_PDF_PAGES || 3),
+      pdfViewportScale: Number(process.env.OLLAMA_PDF_IMAGE_SCALE || 1.45)
+    },
     azureVision: {
       apiKey: azureVisionApiKey,
       endpoint: (process.env.AZURE_VISION_ENDPOINT || "").trim(),
       timeoutMs: Number(process.env.AZURE_VISION_TIMEOUT_MS || 120000),
       pollIntervalMs: Number(process.env.AZURE_VISION_POLL_INTERVAL_MS || 1000)
     },
+    hybridOcrTimeoutMs: Number(process.env.HYBRID_OCR_TIMEOUT_MS || 25000),
+    fastModeBudgetMs: Number(process.env.FAST_MODE_BUDGET_MS || 30000),
     // Backward-compatible aliases (Gemini defaults)
     apiKey: geminiApiKey,
     model: process.env.GEMINI_MODEL || process.env.AI_MODEL || "gemini-2.5-flash"

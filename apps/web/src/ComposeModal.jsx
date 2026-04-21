@@ -1,8 +1,8 @@
-import { lazy, Suspense, useState } from "react";
-
-const TargetingEditor = lazy(() => import("./TargetingEditor"));
+import { useState } from "react";
+import TargetingEditor from "./TargetingEditor";
 
 const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
+
 
 export default function ComposeModal({ tenantId, onClose, onSent }) {
   const [title, setTitle] = useState("");
@@ -14,14 +14,16 @@ export default function ComposeModal({ tenantId, onClose, onSent }) {
   const [filters, setFilters] = useState({});
   const [previewCount, setPreviewCount] = useState(0);
   const [sending, setSending] = useState(false);
+  const [sendStep, setSendStep] = useState("");
   const [error, setError] = useState("");
   const [file, setFile] = useState(null);
 
   async function handleSend() {
     if (!content.trim() && !file) { setError("Content or file is required"); return; }
-    if (previewCount === 0) { setError("No recipients matched"); return; }
+    if (previewCount === 0) { setError("No recipients matched — use the targeting filter to add recipients"); return; }
     setError("");
     setSending(true);
+    setSendStep("Preparing...");
     try {
       const fd = new FormData();
       fd.append("title", title || "Custom Notification");
@@ -33,21 +35,23 @@ export default function ComposeModal({ tenantId, onClose, onSent }) {
       fd.append("filters", JSON.stringify(filters));
       if (file) fd.append("file", file);
 
-      // Do not set Content-Type header so browser adds the generated multipart boundary
       const headers = { "x-tenant-id": tenantId };
       const authToken = sessionStorage.getItem("notify_token");
       if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
 
+      setSendStep(`Sending to ${previewCount} recipients...`);
       const r = await fetch(`${API}/notifications/compose`, {
         method: "POST", headers, body: fd
       });
       const d = await r.json();
-      if (!r.ok) { setError(d.error?.message || "Failed"); setSending(false); return; }
+      if (!r.ok) { setError(d.error?.message || "Failed to send"); setSending(false); setSendStep(""); return; }
+      setSendStep("");
       onSent?.(d);
       onClose();
     } catch (e) {
-      setError(e.message);
+      setError(e.message || "Network error — please try again");
       setSending(false);
+      setSendStep("");
     }
   }
 
@@ -117,22 +121,33 @@ export default function ComposeModal({ tenantId, onClose, onSent }) {
           <div className="divider" />
 
           {/* Targeting */}
-          <Suspense fallback={<div className="text-sm text-muted">Loading targeting editor...</div>}>
-            <TargetingEditor
-              tenantId={tenantId}
-              initialFilters={{}}
-              onFiltersChange={setFilters}
-              onPreviewUpdate={p => setPreviewCount(p.count)}
-            />
-          </Suspense>
+          <TargetingEditor
+            tenantId={tenantId}
+            initialFilters={{}}
+            onFiltersChange={setFilters}
+            onPreviewUpdate={p => setPreviewCount(p.count)}
+          />
 
           {error && <div className="login-error" style={{ marginTop: 12 }}>{error}</div>}
         </div>
 
         <div className="modal-footer">
-          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" disabled={sending || !content.trim() || previewCount === 0} onClick={handleSend}>
-            {sending ? "Sending..." : scheduledAt ? `⏰ Schedule to ${previewCount} recipients` : `📨 Send to ${previewCount} recipients`}
+          <button className="btn btn-ghost" onClick={onClose} disabled={sending}>Cancel</button>
+          <button
+            className="btn btn-primary"
+            disabled={sending || (!content.trim() && !file) || previewCount === 0}
+            onClick={handleSend}
+            style={{ minWidth: 200 }}
+          >
+            {sending
+              ? <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "white", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                  {sendStep || "Sending..."}
+                </span>
+              : scheduledAt
+                ? `⏰ Schedule to ${previewCount}`
+                : `📨 Send to ${previewCount} recipients`
+            }
           </button>
         </div>
       </div>

@@ -1,6 +1,8 @@
 const env = require("../../config/env");
 const fs = require("fs/promises");
 const path = require("path");
+const { createCanvas, loadImage } = require("@napi-rs/canvas");
+const { pdfToPng } = require("pdf-to-png-converter");
 
 function detectMimeTypeFromFilePath(filePath) {
   const ext = path.extname(filePath || "").toLowerCase();
@@ -502,6 +504,42 @@ function cleanSubjectCandidate(text) {
     .trim();
 }
 
+function isCircularNoiseLine(text) {
+  const normalized = normalizeTextValue(text);
+  if (!normalized) {
+    return true;
+  }
+
+  const upper = normalized.toUpperCase();
+  const noisySignals = [
+    "ST. JOSEPH",
+    "ST JOSEPH",
+    "COLLEGE OF ENGINEERING",
+    "AUTONOMOUS INSTITUTION",
+    "GROUP OF INSTITUTIONS",
+    "OMR",
+    "CHENNAI",
+    "DEPARTMENT OF",
+    "HOD",
+    "INCHARGE",
+    "PRINCIPAL",
+    "DEAR STUDENTS",
+    "CIRCULAR"
+  ];
+
+  if (noisySignals.some((signal) => upper.includes(signal))) {
+    return true;
+  }
+
+  return normalized.length < 6 || (/^[A-Z0-9\s().,/:;'"-]+$/.test(normalized) && normalized.split(/\s+/).length <= 5);
+}
+
+function isCircularActionLine(text) {
+  return /\b(deadline|submit|form|link|apply|register|fee|membership|on\s+or\s+before|on\s+before|google\s*form|http|https)\b/i.test(
+    normalizeTextValue(text)
+  );
+}
+
 function calculateLocalConfidence(event) {
   let confidence = 0.3;
 
@@ -529,31 +567,48 @@ function calculateLocalConfidence(event) {
 }
 
 function buildLocalEventFromText(text, docType) {
-  const date = extractDateToken(text);
-  const timeInfo = normalizeTimeRange(extractTimeToken(text));
-  const subjectCode = extractSubjectCodeToken(text);
-  const subjectName = cleanSubjectCandidate(text);
+  const normalizedText = normalizeTextValue(text);
+  const date = extractDateToken(normalizedText);
+  const timeInfo = normalizeTimeRange(extractTimeToken(normalizedText));
+  const subjectCode = extractSubjectCodeToken(normalizedText);
+  const subjectName = cleanSubjectCandidate(normalizedText);
+
+  if (docType === "circular" && isCircularNoiseLine(normalizedText) && !isCircularActionLine(normalizedText)) {
+    return null;
+  }
 
   if (!date && !subjectCode && (!subjectName || subjectName.length < 5)) {
     return null;
   }
 
-  const depts = [];
-  const upper = text.toUpperCase();
-  if (upper.includes("CSE") || upper.includes("COMPUTER")) depts.push("CSE");
-  if (upper.includes("ECE") || upper.includes("ELECTRONICS")) depts.push("ECE");
-  if (upper.includes("MECH") || upper.includes("MECHANICAL")) depts.push("MECH");
-  if (upper.includes("CIVIL")) depts.push("CIVIL");
-  if (upper.includes("IT") || upper.includes("INFORMATION TECH")) depts.push("IT");
-  if (upper.includes("EEE") || upper.includes("ELECTRICAL")) depts.push("EEE");
+  const departmentRules = [
+    { label: "CSE", pattern: /\bCSE\b|\bCOMPUTER\s+SCIENCE\b/i },
+    { label: "ECE", pattern: /\bECE\b|\bELECTRONICS\b/i },
+    { label: "MECH", pattern: /\bMECH\b|\bMECHANICAL\b/i },
+    { label: "CIVIL", pattern: /\bCIVIL\b/i },
+    { label: "IT", pattern: /\bIT\b|\bINFORMATION\s+TECH(?:NOLOGY)?\b/i },
+    { label: "EEE", pattern: /\bEEE\b|\bELECTRICAL\b/i }
+  ];
+  const depts = departmentRules.filter((rule) => rule.pattern.test(normalizedText)).map((rule) => rule.label);
+
+  let conciseSubjectName = subjectName || (subjectCode ? "UNKNOWN_SUBJECT" : "UNKNOWN");
+  let instructions = "";
+  if (docType === "circular") {
+    if (conciseSubjectName.length > 96) {
+      instructions = normalizedText;
+      conciseSubjectName = conciseSubjectName.slice(0, 96).trim();
+    } else if (isCircularActionLine(normalizedText) && normalizedText.length > conciseSubjectName.length + 25) {
+      instructions = normalizedText;
+    }
+  }
 
   const event = {
     date,
     startTime: timeInfo.startTime,
     endTime: timeInfo.endTime,
     subjectCode,
-    subjectName: subjectName || (subjectCode ? "UNKNOWN_SUBJECT" : "UNKNOWN"),
-    instructions: "",
+    subjectName: conciseSubjectName,
+    instructions,
     departments: docType === "circular" ? depts : [],
     years: [],
     sections: []
@@ -741,6 +796,186 @@ function buildExtractionPrompt(docType) {
   ].join("\n");
 }
 
+function attachAbortSignal(controller, signal) {
+  if (!signal) {
+    return controller.signal;
+  }
+
+  if (signal.aborted) {
+    controller.abort(signal.reason);
+    return controller.signal;
+  }
+
+  signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
+  return controller.signal;
+}
+
+function emitProgressText(onProgressText, text) {
+  if (typeof onProgressText !== "function") {
+    return;
+  }
+
+  const normalized = normalizeTextValue(text);
+  if (!normalized) {
+    return;
+  }
+
+  onProgressText(normalized.slice(-220));
+}
+
+function trimBase64DataUrl(value) {
+  return String(value || "").replace(/^data:[^;]+;base64,/i, "").replace(/\s+/g, "");
+}
+
+async function normalizeImageToJpeg(imageInput, maxSide = Number(env.ai.ollama.pdfImageSize || 768)) {
+  const resolvedMaxSide = Math.max(1, Math.floor(Number(maxSide) || 768));
+  const sourceBuffer = Buffer.isBuffer(imageInput)
+    ? imageInput
+    : Buffer.from(trimBase64DataUrl(imageInput), "base64");
+
+  if (!sourceBuffer.length) {
+    throw new Error("Image buffer is empty");
+  }
+
+  const image = await loadImage(sourceBuffer);
+  const scale = Math.min(resolvedMaxSide / image.width, resolvedMaxSide / image.height, 1);
+  const targetWidth = Math.max(1, Math.round(image.width * scale));
+  const targetHeight = Math.max(1, Math.round(image.height * scale));
+  const canvas = createCanvas(resolvedMaxSide, resolvedMaxSide);
+  const ctx = canvas.getContext("2d");
+  const offsetX = Math.floor((resolvedMaxSide - targetWidth) / 2);
+  const offsetY = Math.floor((resolvedMaxSide - targetHeight) / 2);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, resolvedMaxSide, resolvedMaxSide);
+  ctx.drawImage(image, offsetX, offsetY, targetWidth, targetHeight);
+
+  // JPEG is more widely supported for local vision models and results in smaller payloads
+  return canvas.toBuffer("image/jpeg");
+}
+
+function getProviderModel(provider) {
+  return normalizeTextValue(provider).toLowerCase() === "ollama" ? env.ai.ollama.model : env.ai.gemini.model;
+}
+
+function buildProviderFallbackResult({ provider, docType, rawText, structuredData, localFallbackResult, providerErrors, message }) {
+  const normalizedProvider = normalizeTextValue(provider).toLowerCase();
+  const fallbackModel = getProviderModel(normalizedProvider);
+  const baseResult = localFallbackResult.events.length > 0
+    ? localFallbackResult
+    : {
+        provider: normalizedProvider || "stub",
+        model: fallbackModel,
+        confidenceScore: 0.1,
+        structured: docType === "exam_timetable" ? buildStructuredTimetable({ rawText, structuredData, events: [] }) : buildStructuredFromEvents(docType, []),
+        events: []
+      };
+
+  return {
+    ...baseResult,
+    provider: normalizedProvider || baseResult.provider,
+    model: baseResult.model || fallbackModel,
+    warnings: [
+      ...(localFallbackResult.warnings || []),
+      message,
+      `Errors from AI providers during attempt: ${providerErrors.join(" | ")}`
+    ]
+  };
+}
+
+async function readOllamaStreamedContent(response, onProgressText) {
+  if (!response.body || !response.body.getReader) {
+    const payload = await response.json();
+    const fallback = payload?.response || "";
+    emitProgressText(onProgressText, fallback);
+    return fallback;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffered = "";
+  let content = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffered += decoder.decode(value, { stream: true });
+    let newlineIndex = buffered.indexOf("\n");
+    while (newlineIndex !== -1) {
+      const line = buffered.slice(0, newlineIndex).trim();
+      buffered = buffered.slice(newlineIndex + 1);
+
+      if (line) {
+        try {
+          const event = JSON.parse(line);
+          if (typeof event.response === "string" && event.response) {
+            content += event.response;
+            emitProgressText(onProgressText, content);
+          }
+        } catch (_error) {
+          // Ignore malformed stream chunks.
+        }
+      }
+
+      newlineIndex = buffered.indexOf("\n");
+    }
+  }
+
+  const finalChunk = buffered.trim();
+  if (finalChunk) {
+    try {
+      const event = JSON.parse(finalChunk);
+      if (typeof event.response === "string" && event.response) {
+        content += event.response;
+      }
+    } catch (_error) {
+      // Ignore malformed final chunk.
+    }
+  }
+
+  emitProgressText(onProgressText, content);
+  return content;
+}
+
+async function convertPdfToBase64Images(filePath, pageCount = 0, onProgressText) {
+  const maxPages = Math.max(1, Math.min(Number(env.ai.ollama.maxPdfPages || 3), Number(pageCount || env.ai.ollama.maxPdfPages || 3)));
+  const pagesToProcess = Array.from({ length: maxPages }, (_, index) => index + 1);
+
+  emitProgressText(onProgressText, `Rendering up to ${maxPages} PDF page(s) for local vision...`);
+
+  const pngPages = await pdfToPng(filePath, {
+    pagesToProcess,
+    viewportScale: Number(env.ai.ollama.pdfViewportScale || 1.45),
+    returnPageContent: true,
+    processPagesInParallel: false,
+    outputFolder: undefined,
+    verbosityLevel: 0
+  });
+
+  const rawPageImages = pngPages
+    .map((page) => page?.content)
+    .filter((content) => Buffer.isBuffer(content) && content.length > 0);
+
+  const normalizedImages = [];
+  try {
+    for (let index = 0; index < rawPageImages.length; index += 1) {
+      emitProgressText(onProgressText, `Converting PDF page ${index + 1}/${rawPageImages.length} to Gemma image format...`);
+      // Process sequentially so live progress text reflects the real page order.
+      const normalized = await normalizeImageToJpeg(rawPageImages[index]);
+      normalizedImages.push(normalized.toString("base64"));
+    }
+  } catch (error) {
+    const errorMessage = `PDF-to-image conversion failed: ${error.message}${error.stack ? `\n${error.stack}` : ""}`;
+    emitProgressText(onProgressText, "❌ Fatal Error: " + errorMessage);
+    throw new Error(errorMessage);
+  }
+
+  emitProgressText(onProgressText, `Prepared ${normalizedImages.length} page image(s) for local Gemma analysis.`);
+
+  return normalizedImages;
+}
+
 function buildResult({ provider, model, events, structured, emptyWarning }) {
   const resolvedStructured = structured || buildStructuredFromEvents("notice", events);
   const sectionValues = Object.values(resolvedStructured?.sections || {});
@@ -850,6 +1085,7 @@ function extractLocalEvents({ docType, rawText, structuredData }) {
     .filter(Boolean);
   const events = [];
   const seen = new Set();
+  const uniqueCandidates = (items) => Array.from(new Set(items.map(normalizeTextValue).filter(Boolean)));
 
   const pushCandidate = (candidateText) => {
     const candidateEvent = buildLocalEventFromText(candidateText, docType);
@@ -912,6 +1148,24 @@ function extractLocalEvents({ docType, rawText, structuredData }) {
         pushCandidate(candidate);
       }
     }
+  } else if (docType === "circular") {
+    const actionableCandidates = uniqueCandidates([...lineCandidates, ...blockCandidates]).filter(
+      (candidate) => isCircularActionLine(candidate) && !isCircularNoiseLine(candidate)
+    );
+
+    for (const candidate of actionableCandidates) {
+      pushCandidate(candidate);
+    }
+
+    if (!events.length) {
+      const fallbackCandidates = uniqueCandidates([...blockCandidates, ...lineCandidates]).filter(
+        (candidate) => !isCircularNoiseLine(candidate) || isCircularActionLine(candidate)
+      );
+
+      for (const candidate of fallbackCandidates) {
+        pushCandidate(candidate);
+      }
+    }
   } else {
     for (const candidate of blockCandidates) {
       pushCandidate(candidate);
@@ -937,10 +1191,11 @@ function extractLocalEvents({ docType, rawText, structuredData }) {
   return buildLocalResult(events, docType);
 }
 
-async function extractWithOpenAICompatibleFromText({ providerName, baseUrl, apiKey, model, docType, rawText }) {
+async function extractWithOpenAICompatibleFromText({ providerName, baseUrl, apiKey, model, docType, rawText, signal }) {
   const prompt = buildExtractionPrompt(docType);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), env.ai.timeoutMs);
+  const requestSignal = attachAbortSignal(controller, signal);
 
   const normalizedBaseUrl = baseUrl.replace(/\/+$/, "");
 
@@ -951,7 +1206,7 @@ async function extractWithOpenAICompatibleFromText({ providerName, baseUrl, apiK
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`
       },
-      signal: controller.signal,
+      signal: requestSignal,
       body: JSON.stringify({
         model,
         temperature: 0,
@@ -987,26 +1242,28 @@ async function extractWithOpenAICompatibleFromText({ providerName, baseUrl, apiK
   }
 }
 
-async function extractWithOllamaFromText({ docType, rawText, model }) {
+async function extractWithOllamaFromText({ docType, rawText, model, signal, onProgressText }) {
   const prompt = buildExtractionPrompt(docType);
   const controller = new AbortController();
-  const timeoutMs = Number(process.env.OLLAMA_TIMEOUT_MS || 120000);
+  const timeoutMs = Number(env.ai.ollama.timeoutMs || 180000);
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const requestSignal = attachAbortSignal(controller, signal);
+  const selectedModel = model || env.ai.ollama.model;
 
   try {
-    const response = await fetch("http://127.0.0.1:11434/api/generate", {
+    const response = await fetch(`${env.ai.ollama.baseUrl}/api/generate`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
-      signal: controller.signal,
+      signal: requestSignal,
       body: JSON.stringify({
-        model: model || "qwen2.5vl:3b",
+        model: selectedModel,
         format: "json",
-        stream: false,
+        stream: true,
         options: {
           temperature: 0.1,
-          num_ctx: 4096 // Ensure Mistral has enough context for larger documents
+          num_ctx: 4096
         },
         prompt: `${prompt}\n\nDocument content:\n${rawText}\n\nReturn only strict JSON.`
       })
@@ -1017,15 +1274,12 @@ async function extractWithOllamaFromText({ docType, rawText, model }) {
       throw new Error(`Ollama request failed with status ${response.status}: ${errorBody.slice(0, 500)}`);
     }
 
-    const payload = await response.json();
-    const content = payload?.response;
-    
-    // Some local models might wrap JSON in markdown blocks despite our instructions
+    const content = await readOllamaStreamedContent(response, onProgressText);
     const parsed = parseModelOutputFromText(content, docType);
 
     return buildResult({
       provider: "ollama-local",
-      model: model || "mistral",
+      model: selectedModel,
       events: parsed.events,
       structured: parsed.structured,
       emptyWarning: `Ollama extracted no events from the text`
@@ -1073,16 +1327,17 @@ async function callGeminiGenerateContent({ model, body, signal }) {
   return response.json();
 }
 
-async function runGeminiWithFallbacks({ body, docType, emptyWarning }) {
+async function runGeminiWithFallbacks({ body, docType, emptyWarning, signal }) {
   const modelCandidates = getGeminiModelCandidates();
   let lastError = null;
 
   for (const model of modelCandidates) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), env.ai.timeoutMs);
+    const requestSignal = attachAbortSignal(controller, signal);
 
     try {
-      const payload = await callGeminiGenerateContent({ model, body, signal: controller.signal });
+      const payload = await callGeminiGenerateContent({ model, body, signal: requestSignal });
       const text = payload?.candidates?.[0]?.content?.parts?.[0]?.text;
       const parsed = parseModelOutputFromText(text, docType || "notice");
 
@@ -1108,7 +1363,7 @@ async function runGeminiWithFallbacks({ body, docType, emptyWarning }) {
   throw lastError || new Error("Gemini request failed for all candidate models");
 }
 
-async function extractWithGeminiFromText({ docType, rawText }) {
+async function extractWithGeminiFromText({ docType, rawText, signal }) {
   const prompt = buildExtractionPrompt(docType);
 
   return runGeminiWithFallbacks({
@@ -1125,11 +1380,12 @@ async function extractWithGeminiFromText({ docType, rawText }) {
       }
     },
     docType,
+    signal,
     emptyWarning: "Gemini extracted no events from the text"
   });
 }
 
-async function extractWithGeminiFromFile({ docType, filePath, pageCount }) {
+async function extractWithGeminiFromFile({ docType, filePath, pageCount, signal }) {
   const fileBuffer = await fs.readFile(filePath);
   const base64File = fileBuffer.toString("base64");
   const mimeType = detectMimeTypeFromFilePath(filePath);
@@ -1156,31 +1412,55 @@ async function extractWithGeminiFromFile({ docType, filePath, pageCount }) {
       }
     },
     docType,
+    signal,
     emptyWarning: "Gemini extracted no events from the uploaded file"
   });
 }
 
-async function extractWithOllamaFromPdf({ docType, filePath, pageCount }) {
-  const fileBuffer = await fs.readFile(filePath);
-  const base64Image = fileBuffer.toString("base64");
-
+async function extractWithOllamaFromPdf({ docType, filePath, pageCount, signal, onProgressText }) {
   const prompt = buildExtractionPrompt(docType);
   const controller = new AbortController();
-  const timeoutMs = Number(process.env.OLLAMA_TIMEOUT_MS || 120000);
+  const timeoutMs = Number(env.ai.ollama.timeoutMs || 180000);
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const requestSignal = attachAbortSignal(controller, signal);
+  const selectedModel = env.ai.ollama.model;
 
   try {
-    const response = await fetch("http://127.0.0.1:11434/api/generate", {
+    const mimeType = detectMimeTypeFromFilePath(filePath);
+    let images = [];
+
+    if (mimeType === "application/pdf") {
+      emitProgressText(onProgressText, "Converting PDF pages to images for local vision model...");
+      images = await convertPdfToBase64Images(filePath, pageCount, onProgressText);
+      if (!images.length) {
+        throw new Error("PDF-to-image conversion produced no pages for local AI");
+      }
+    } else {
+      emitProgressText(onProgressText, "Normalizing uploaded image for local vision model...");
+      const fileBuffer = await fs.readFile(filePath);
+      images = [(await normalizeImageToJpeg(fileBuffer)).toString("base64")];
+    }
+
+    emitProgressText(onProgressText, `Sending ${images.length} image(s) to local model ${selectedModel}...`);
+
+    const response = await fetch(`${env.ai.ollama.baseUrl}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
+      signal: requestSignal,
       body: JSON.stringify({
-        model: "qwen2.5vl:3b",
+        model: selectedModel,
         format: "json",
-        stream: false,
-        options: { temperature: 0.1 },
+        stream: true,
+        options: { 
+          temperature: 0.1,
+          num_ctx: 8192, // Sufficient room for images + large JSON
+          num_predict: 2048, // Limit response length to prevent loops
+          repeat_penalty: 1.1,
+          top_k: 40,
+          top_p: 0.9
+        },
         prompt: `${prompt}\n\nReturn only strict JSON.`,
-        images: [base64Image]
+        images
       })
     });
 
@@ -1189,26 +1469,38 @@ async function extractWithOllamaFromPdf({ docType, filePath, pageCount }) {
       throw new Error(`Ollama Vision request failed with status ${response.status}: ${errorBody.slice(0, 500)}`);
     }
 
-    const payload = await response.json();
-    const content = payload?.response;
+    emitProgressText(onProgressText, `Local model ${selectedModel} is generating structured output...`);
+    const content = await readOllamaStreamedContent(response, onProgressText);
     const parsed = parseModelOutputFromText(content, docType);
 
     return buildResult({
       provider: "ollama",
-      model: "qwen2.5vl:3b",
+      model: selectedModel,
       events: parsed.events,
       structured: parsed.structured,
-      emptyWarning: "Ollama (Qwen-VL) extracted no events from the provided document"
+      emptyWarning: "Local Ollama/Gemma extracted no events from the provided document"
     });
   } finally {
     clearTimeout(timeout);
   }
 }
 
-async function extractStructuredData({ docType, rawText, filePath, pageCount, provider, structuredData, settings = {} }) {
+async function extractStructuredData({ docType, rawText, filePath, pageCount, provider, structuredData, settings = {}, signal, onProgressText }) {
   const providerErrors = [];
   const requestedProvider = normalizeTextValue(provider).toLowerCase();
   const explicitProviderSelected = Boolean(requestedProvider);
+  const localFallbackResult = extractLocalEvents({ docType, rawText, structuredData });
+  const fastModeEnabled = settings.fastMode !== false;
+  const preferLocalFirst = settings.preferLocalFirst !== false && fastModeEnabled;
+  const localConfidenceThreshold = Number.isFinite(settings.localConfidenceThreshold)
+    ? settings.localConfidenceThreshold
+    : 0.72;
+  const localHasStructuredContent =
+    (localFallbackResult?.events?.length || 0) > 0 ||
+    Object.values(localFallbackResult?.structured?.sections || {}).some((section) => Array.isArray(section) && section.length > 0);
+  const localMeetsThreshold = (localFallbackResult?.confidenceScore || 0) >= localConfidenceThreshold;
+  const allowLocalFirstForRequestedProvider =
+    !explicitProviderSelected || requestedProvider === "gemini" || requestedProvider === "azure_vision";
   const withRequestedProviderTag = (result) => {
     if (!result || requestedProvider !== "azure_vision") {
       return result;
@@ -1228,6 +1520,17 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
     return extractLocalEvents({ docType, rawText, structuredData });
   }
 
+  // Fast mode: use high-confidence local extraction to avoid unnecessary cloud AI calls.
+  if (preferLocalFirst && allowLocalFirstForRequestedProvider && localHasStructuredContent && localMeetsThreshold) {
+    return withRequestedProviderTag({
+      ...localFallbackResult,
+      warnings: [
+        ...(localFallbackResult.warnings || []),
+        `Local-first extraction selected in fast mode (confidence ${(localFallbackResult.confidenceScore * 100).toFixed(0)}%). Cloud AI call skipped to reduce latency and cost.`
+      ]
+    });
+  }
+
   // If user explicitly selected a provider in UI, honor it strictly by default.
   // Cross-provider fallback can still be opted in via settings.useFallbacks = true.
   const useFallbacks = explicitProviderSelected
@@ -1238,13 +1541,13 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
     {
       name: "ollama",
       enabled: requestedProvider === "ollama",
-      execute: () => extractWithOllamaFromText({ docType, rawText, model: "qwen2.5vl:3b" })
+      execute: () => extractWithOllamaFromText({ docType, rawText, model: env.ai.ollama.model, signal, onProgressText })
     },
     {
       name: "gemini",
       // Azure Vision is OCR-only in this app, so structured extraction should use Gemini.
       enabled: requestedProvider === "gemini" || requestedProvider === "azure_vision" || (!explicitProviderSelected && Boolean(env.ai.gemini.apiKey)),
-      execute: () => extractWithGeminiFromText({ docType, rawText })
+      execute: () => extractWithGeminiFromText({ docType, rawText, signal })
     },
     {
       name: "groq",
@@ -1256,7 +1559,8 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
           apiKey: env.ai.groq.apiKey,
           model: env.ai.groq.model,
           docType,
-          rawText
+          rawText,
+          signal
         })
     },
     {
@@ -1294,6 +1598,51 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
     }
   ].filter((provider) => provider.enabled);
 
+  const shouldFastAbort = fastModeEnabled;
+  const isAbortLike = (error) => error?.name === "AbortError" || /budget exceeded|cancelled by user|timed out/i.test(error?.message || "");
+
+  const selectedModel = (env.ai.ollama.model || "").toLowerCase();
+  const isVisionCapableModel = /vision|vl|llava|moondream|gemma4/i.test(selectedModel);
+
+  const isPdfForLocalVision =
+    requestedProvider === "ollama" &&
+    Boolean(filePath) &&
+    detectMimeTypeFromFilePath(filePath) === "application/pdf" &&
+    (isVisionCapableModel || !rawText || rawText.trim().length < 20); 
+
+  if (isPdfForLocalVision) {
+    try {
+      emitProgressText(onProgressText, `Preparing PDF pages for local ${isVisionCapableModel ? "Vision AI" : "OCR fallback"} processing...`);
+      const localVisionResult = await extractWithOllamaFromPdf({
+        docType,
+        filePath,
+        pageCount,
+        signal,
+        onProgressText
+      });
+      if (localVisionResult?.events?.length > 0 || Object.keys(localVisionResult?.structured?.sections || {}).some((k) => localVisionResult.structured.sections[k]?.length > 0)) {
+        return withRequestedProviderTag(localVisionResult);
+      }
+      providerErrors.push("ollama (pdf-images): No events extracted");
+    } catch (error) {
+      providerErrors.push(`ollama (pdf-images): ${error.message}`);
+      console.error("[Ollama Vision] Error during PDF image processing:", error);
+      if (shouldFastAbort && isAbortLike(error)) {
+        return withRequestedProviderTag(
+          buildProviderFallbackResult({
+            provider: requestedProvider || "ollama",
+            docType,
+            rawText,
+            structuredData,
+            localFallbackResult,
+            providerErrors,
+            message: "Local AI exceeded the fast-mode budget. Returning local fallback output."
+          })
+        );
+      }
+    }
+  }
+
   if (rawText && rawText.trim().length > 0 && textProviders.length > 0) {
     for (const provider of textProviders) {
       try {
@@ -1304,6 +1653,19 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
         providerErrors.push(`${provider.name}: No events extracted`);
       } catch (error) {
         providerErrors.push(`${provider.name}: ${error.message}`);
+        if (shouldFastAbort && isAbortLike(error)) {
+          return withRequestedProviderTag(
+            buildProviderFallbackResult({
+              provider: requestedProvider || provider.name,
+              docType,
+              rawText,
+              structuredData,
+              localFallbackResult,
+              providerErrors,
+              message: "Cloud AI exceeded the fast-mode budget. Returning local fallback output."
+            })
+          );
+        }
       }
     }
   }
@@ -1327,7 +1689,7 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
       {
         name: "ollama",
         enabled: requestedProvider === "ollama",
-        execute: () => extractWithOllamaFromPdf({ docType, filePath, pageCount })
+        execute: () => extractWithOllamaFromPdf({ docType, filePath, pageCount, signal, onProgressText })
       },
       {
         name: "gemini",
@@ -1342,20 +1704,36 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
         return withRequestedProviderTag(result);
       } catch (error) {
         providerErrors.push(`${providerCandidate.name} (file): ${error.message.slice(0, 200)}`);
+        if (shouldFastAbort && isAbortLike(error)) {
+          return withRequestedProviderTag(
+            buildProviderFallbackResult({
+              provider: requestedProvider || providerCandidate.name,
+              docType,
+              rawText,
+              structuredData,
+              localFallbackResult,
+              providerErrors,
+              message: "Cloud AI exceeded the fast-mode budget. Returning local fallback output."
+            })
+          );
+        }
       }
     }
 
     // If PDF extraction was attempted but failed
     if (providerErrors.length > 0) {
+      const hasOllamaSelected = requestedProvider === "ollama";
       return withRequestedProviderTag({
         provider: "stub",
-        model: env.ai.gemini.model,
+        model: getProviderModel(hasOllamaSelected ? "ollama" : "gemini"),
         confidenceScore: 0.05,
         structured: docType === "exam_timetable" ? buildStructuredTimetable({ rawText, structuredData, events: [] }) : buildStructuredFromEvents(docType, []),
         warnings: [
           "PDF text extraction failed.",
           `AI extraction attempted: ${providerErrors.join(" | ")}`,
-          "This document may be a scanned image. Ensure GEMINI_API_KEY is valid for image extraction."
+          hasOllamaSelected
+            ? "This document may be a scanned image. Local Ollama image extraction failed after PDF conversion."
+            : "This document may be a scanned image. Ensure GEMINI_API_KEY is valid for image extraction."
         ],
         events: []
       });
@@ -1363,17 +1741,20 @@ async function extractStructuredData({ docType, rawText, filePath, pageCount, pr
   }
 
   if (!rawText || rawText.trim().length === 0) {
+    const hasOllamaSelected = requestedProvider === "ollama";
     return withRequestedProviderTag({
       provider: "stub",
-      model: env.ai.gemini.model,
+      model: getProviderModel(hasOllamaSelected ? "ollama" : "gemini"),
       confidenceScore: 0,
       structured: docType === "exam_timetable" ? buildStructuredTimetable({ rawText, structuredData, events: [] }) : buildStructuredFromEvents(docType, []),
       warnings: [
         "No text extracted from document parser",
         "This is typically a scanned PDF or image without searchable text.",
-        env.ai.gemini.apiKey
-          ? "Gemini API key is configured. If extraction still fails, the API may be rate-limited or the document quality is too poor."
-          : "No GEMINI_API_KEY configured. Configure it for scanned PDF extraction.",
+        hasOllamaSelected
+          ? "Local Ollama was selected. If extraction still fails, the converted page images may be too large or too noisy for the model."
+          : env.ai.gemini.apiKey
+            ? "Gemini API key is configured. If extraction still fails, the API may be rate-limited or the document quality is too poor."
+            : "No GEMINI_API_KEY configured. Configure it for scanned PDF extraction.",
         ...(providerErrors.length ? [`Provider errors: ${providerErrors.join(" | ")}`] : [])
       ],
       events: []

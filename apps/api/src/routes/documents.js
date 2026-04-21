@@ -48,24 +48,29 @@ router.post("/upload", upload.single("file"), async (req, res, next) => {
     // Return jobId immediately so frontend can start polling
     res.status(202).json({ jobId, message: "Processing started" });
 
-    try {
-      updateJob(jobId, "parse", "Extracting text and structure...");
-      const result = await processUploadedDocument({
-        tenantId: req.tenantId,
-        title,
-        docType,
-        provider: requestedProvider,
-        file: req.file,
-        uploadedBy: req.body.uploadedBy || "admin",
-        workflowSettings,
-        jobId
-      });
+    // Use setTimeout instead of setImmediate to ensure the HTTP response 
+    // is fully flushed to the client before we block the event loop 
+    // with heavy CPU-intensive PDF parsing or AI processing.
+    setTimeout(async () => {
+      try {
+        updateJob(jobId, "parse", "Extracting text and structure...");
+        const result = await processUploadedDocument({
+          tenantId: req.tenantId,
+          title,
+          docType,
+          provider: requestedProvider,
+          file: req.file,
+          uploadedBy: req.body.uploadedBy || "admin",
+          workflowSettings,
+          jobId
+        });
 
-      completeJob(jobId, result.routingResult?.recipients?.length ?? 0);
-    } catch (err) {
-      failJob(jobId, err.message || "Unknown error");
-      console.error("[upload] Pipeline error:", err);
-    }
+        completeJob(jobId, result.routingResult?.recipients?.length ?? 0);
+      } catch (err) {
+        failJob(jobId, err.message || "Unknown error");
+        console.error("[upload] Pipeline error:", err);
+      }
+    }, 500);
   } catch (error) {
     return next(error);
   }
@@ -417,6 +422,19 @@ router.post("/:id/reprocess", async (req, res, next) => {
 
     const rawText = latestVersion.parserOutput.rawText;
     const provider = req.body.provider || "ollama";
+    const workflowSettings = req.body.settings || {};
+    const fastMode = workflowSettings.fastMode !== false;
+    const budgetMs = workflowSettings.processingBudgetMs || env.ai.fastModeBudgetMs;
+    const budgetController = fastMode && budgetMs > 0 ? new AbortController() : null;
+    const mergedSignal = (() => {
+      if (!budgetController) return undefined;
+      return budgetController.signal;
+    })();
+
+    let budgetTimer = null;
+    if (budgetController) {
+      budgetTimer = setTimeout(() => budgetController.abort(new Error("Fast mode processing budget exceeded")), budgetMs);
+    }
 
     doc.status = "processing";
     await doc.save();
@@ -427,7 +445,9 @@ router.post("/:id/reprocess", async (req, res, next) => {
       filePath: latestVersion.parserOutput.filePath,
       pageCount: latestVersion.parserOutput.pageCount,
       provider,
-      structuredData: latestVersion.parserOutput.structuredData
+      structuredData: latestVersion.parserOutput.structuredData,
+      settings: workflowSettings,
+      signal: mergedSignal
     });
 
     latestVersion.extraction = extractionResult;
@@ -459,6 +479,7 @@ router.post("/:id/reprocess", async (req, res, next) => {
     await doc.save();
 
     res.json({ success: true, extraction: extractionResult, recipientCount: routingResult.recipients.length });
+    if (budgetTimer) clearTimeout(budgetTimer);
   } catch (error) {
     next(error);
   }

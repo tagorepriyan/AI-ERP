@@ -27,7 +27,8 @@ function createJob(jobId) {
     estimatedRemainingSec: 150,
     startedAt: Date.now(),
     updatedAt: Date.now(),
-    error: null
+    error: null,
+    liveText: ""
   };
   jobs.set(jobId, job);
   abortControllers.set(jobId, new AbortController());
@@ -61,6 +62,7 @@ function failJob(jobId, errorMsg) {
   job.label = `Error: ${errorMsg}`;
   job.pct = 0;
   job.error = errorMsg;
+  job.liveText = "";
   job.updatedAt = Date.now();
   abortControllers.delete(jobId);
 }
@@ -74,6 +76,7 @@ function completeJob(jobId, recipientCount = 0) {
   job.estimatedRemainingSec = 0;
   job.elapsedSec = Math.round((Date.now() - job.startedAt) / 1000);
   job.recipientCount = recipientCount;
+  job.liveText = "";
   job.updatedAt = Date.now();
   abortControllers.delete(jobId);
 
@@ -92,6 +95,15 @@ function getJobSignal(jobId) {
   return abortControllers.get(jobId)?.signal;
 }
 
+function updateJobLiveText(jobId, text) {
+  const job = jobs.get(jobId);
+  if (!job) return;
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return;
+  job.liveText = normalized.slice(-280);
+  job.updatedAt = Date.now();
+}
+
 function cancelJob(jobId) {
   const controller = abortControllers.get(jobId);
   if (controller) {
@@ -106,4 +118,4 @@ function isCancelled(jobId) {
   return abortControllers.get(jobId)?.signal?.aborted || false;
 }
 
-module.exports = { createJob, updateJob, failJob, completeJob, getJob, getJobSignal, cancelJob, isCancelled, STAGES };
+module.exports = { createJob, updateJob, updateJobLiveText, failJob, completeJob, getJob, getJobSignal, cancelJob, isCancelled, STAGES };

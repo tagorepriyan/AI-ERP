@@ -1,6 +1,7 @@
 import { useState } from "react";
 
-const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
+const API = import.meta.env.VITE_API_BASE_URL || "/api";
+
 
 export default function LoginPage({ onLogin }) {
   const [regNo, setRegNo] = useState("");

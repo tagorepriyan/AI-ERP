@@ -154,6 +154,11 @@ a { text-decoration: none; color: inherit; }
   75% { transform: translateX(8px); }
 }
 
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
 /* ============================================================
    APP SHELL — 3-panel layout
    ============================================================ */
@@ -1310,6 +1315,20 @@ a { text-decoration: none; color: inherit; }
   align-items: center;
   justify-content: space-between;
   margin-bottom: 8px;
+}
+
+.progress-live-text {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(15, 23, 42, 0.72);
+  background: rgba(148, 163, 184, 0.14);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  padding: 6px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ============================================================

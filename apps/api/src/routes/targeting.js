@@ -38,16 +38,10 @@ function buildFilterQuery(filters = {}, tenantId) {
 // ── POST /targeting/preview — live recipient preview ─────────────────────────
 router.post("/preview", async (req, res, next) => {
   try {
-    const { filters = {} } = req.body;
+    const { filters = {}, countOnly = false } = req.body;
     const query = buildFilterQuery(filters, req.tenantId);
 
-    const students = await Student.find(query)
-      .select("registrationNo fullName department year semester section role isHostelStudent hasArrears email phone")
-      .sort({ department: 1, year: 1, fullName: 1 })
-      .limit(500)
-      .lean();
-
-    // Build human-readable applied filter labels
+    // Build human-readable applied filter labels (always fast)
     const appliedFilters = [];
     if (filters.departments?.length) appliedFilters.push(`department:${filters.departments.join(",")}`);
     if (filters.years?.length) appliedFilters.push(`year:${filters.years.join(",")}`);
@@ -59,11 +53,24 @@ router.post("/preview", async (req, res, next) => {
     if (filters.hasArrears === true) appliedFilters.push("hasArrears:true");
     if (filters.hasArrears === false) appliedFilters.push("hasArrears:false");
 
+    if (countOnly) {
+      // Ultra-fast: only count, don't fetch documents
+      const count = await Student.countDocuments(query);
+      return res.json({ count, students: [], appliedFilters });
+    }
+
+    const students = await Student.find(query)
+      .select("registrationNo fullName department year semester section role isHostelStudent hasArrears")
+      .sort({ department: 1, year: 1, fullName: 1 })
+      .limit(500)
+      .lean();
+
     res.json({ count: students.length, students, appliedFilters });
   } catch (err) {
     next(err);
   }
 });
+
 
 // ── POST /targeting/update/:documentId — update targeting for pending doc ────
 router.post("/update/:documentId", async (req, res, next) => {

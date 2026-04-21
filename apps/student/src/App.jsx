@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import LoginPage from "./LoginPage";
 
-const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
+const API = import.meta.env.VITE_API_BASE_URL || "/api";
+
 
 const TYPE_ICONS = {
   circular:       "📢",
@@ -64,8 +65,13 @@ export default function App() {
   const [loading, setLoading]           = useState(false);
   const [error, setError]               = useState("");
 
-  const prevCountRef  = useRef(0);
+  const prevCountRef   = useRef(0);
   const initializedRef = useRef(false);
+  const swRegRef       = useRef(null);   // live SW registration ref
+
+  const [notifPermission, setNotifPermission] = useState(
+    typeof Notification !== "undefined" ? Notification.permission : "denied"
+  );
 
   const headers = { "x-tenant-id": "default-campus", "Authorization": `Bearer ${studentToken}` };
 
@@ -93,16 +99,20 @@ export default function App() {
       const items = (d.notifications || []).sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt));
       setNotifications(items);
 
-      // Native notification push
+      // ── Push notification via Service Worker (works on Android) ─────────
       if (initializedRef.current && items.length > prevCountRef.current && Notification.permission === "granted") {
-        const diff = items.length - prevCountRef.current;
+        const diff   = items.length - prevCountRef.current;
         const latest = items[0];
-        new Notification(latest?.documentTitle || "New Notification", {
-          body: latest?.content?.slice(0, 80) || `You have ${diff} new notification${diff > 1 ? "s" : ""}`,
-          icon: "/vite.svg",
-          badge: "/vite.svg",
-          tag: "student-portal"
-        });
+        const title  = latest?.documentTitle || "📢 New Notification";
+        const body   = latest?.content?.slice(0, 100) || `You have ${diff} new notification${diff > 1 ? "s" : ""}`;
+        const opts   = { body, icon: "/vite.svg", badge: "/vite.svg", tag: "student-portal", renotify: true, vibrate: [200, 100, 200] };
+
+        // Android requires SW — new Notification() silently fails there
+        if (swRegRef.current) {
+          swRegRef.current.showNotification(title, opts).catch(() => {});
+        } else if (navigator.serviceWorker?.ready) {
+          navigator.serviceWorker.ready.then(reg => reg.showNotification(title, opts)).catch(() => {});
+        }
       }
       prevCountRef.current = items.length;
       initializedRef.current = true;
@@ -123,10 +133,17 @@ export default function App() {
     } catch {}
   }, [authed, studentId]);
 
-  // ── Request push permission ───────────────────────────────────
+  // ── Request push permission (must happen on user gesture on mobile) ────────
+  async function requestNotifPermission() {
+    if (typeof Notification === "undefined") return;
+    const result = await Notification.requestPermission();
+    setNotifPermission(result);
+  }
+
+  // Auto-prompt on desktop only (mobile needs a gesture)
   useEffect(() => {
-    if (authed && "Notification" in window && Notification.permission === "default") {
-      Notification.requestPermission();
+    if (authed && Notification.permission === "default" && !/Android|iPhone|iPad/i.test(navigator.userAgent)) {
+      Notification.requestPermission().then(p => setNotifPermission(p));
     }
   }, [authed]);
 
@@ -139,9 +156,44 @@ export default function App() {
     return () => clearInterval(poll);
   }, [authed]);
 
-  function handleLogin() { setAuthed(true); }
+  // ── IDB helpers so SW can read credentials ─────────────────
+  async function idbSet(key, value) {
+    return new Promise((resolve) => {
+      const req = indexedDB.open("sp-store", 1);
+      req.onupgradeneeded = () => req.result.createObjectStore("kv");
+      req.onsuccess = () => {
+        const tx = req.result.transaction("kv", "readwrite");
+        tx.objectStore("kv").put(value, key);
+        tx.oncomplete = resolve;
+      };
+    });
+  }
+
+  // ── Service Worker registration ─────────────────────────────
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    navigator.serviceWorker.register("/sw.js", { scope: "/" })
+      .then((reg) => {
+        swRegRef.current = reg;  // store for fast notification dispatch
+        console.log("[SW] Registered:", reg.scope);
+        // Keep ref updated on SW updates
+        navigator.serviceWorker.ready.then(r => { swRegRef.current = r; });
+      })
+      .catch((err) => console.warn("[SW] Registration failed:", err));
+  }, []);
+
+  function handleLogin(data) {
+    // Write to IDB so service worker can access creds in background
+    idbSet("studentId", data.student?.id || "");
+    idbSet("token", data.token || "");
+    idbSet("tenantId", "default-campus");
+    idbSet("notifCount", 0);
+    setAuthed(true);
+  }
 
   function handleLogout() {
+    idbSet("studentId", null);
+    idbSet("token", null);
     sessionStorage.clear();
     setAuthed(false);
     setNotifications([]);
@@ -206,6 +258,56 @@ export default function App() {
       </header>
 
       {loading && <div className="sp-refresh-bar" />}
+
+      {/* ── Android Push Permission Banner ──────────────────── */}
+      {authed && notifPermission !== "granted" && notifPermission !== "denied" && (
+        <div style={{
+          background: "linear-gradient(135deg, #4338ca, #6366f1)",
+          padding: "12px 18px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          flexShrink: 0
+        }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>🔔 Enable Notifications</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.8)", marginTop: 2 }}>
+              Get instant alerts when admin sends announcements
+            </div>
+          </div>
+          <button
+            onClick={requestNotifPermission}
+            style={{
+              padding: "8px 16px",
+              background: "#fff",
+              color: "#4338ca",
+              border: "none",
+              borderRadius: 20,
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+              flexShrink: 0
+            }}
+          >
+            Allow
+          </button>
+        </div>
+      )}
+
+      {authed && notifPermission === "denied" && (
+        <div style={{
+          background: "rgba(239,68,68,0.1)",
+          borderBottom: "1px solid rgba(239,68,68,0.3)",
+          padding: "8px 16px",
+          fontSize: 12,
+          color: "#fca5a5",
+          flexShrink: 0
+        }}>
+          ⚠ Notifications blocked — enable in your browser settings to receive alerts
+        </div>
+      )}
 
       {/* ── Screens ─────────────────────────────────────────── */}
       <div className="sp-screen">

@@ -7,9 +7,16 @@ const ComposeModal = lazy(() => import("./ComposeModal"));
 
 const API = import.meta.env.VITE_API_BASE_URL || `${location.protocol}//${location.hostname}:4000`;
 const APP_SECTIONS = ["dashboard", "documents", "students", "notifications", "settings"];
-const DOCUMENT_TABS = ["intelligence", "schedule", "routing", "recipients", "raw"];
+const DOCUMENT_TABS = ["intelligence", "trace", "schedule", "routing", "recipients", "raw"];
 const NOTIFICATION_TABS = ["queue", "history"];
 const HISTORY_STATUSES = ["delivered", "scheduled", "pending", "failed", "skipped", "all"];
+const DEFAULT_WORKFLOW_SETTINGS = {
+  fastMode: true,
+  skipHybridOcr: true,
+  bypassPdfParse: false,
+  aiEnabled: true,
+  useFallbacks: false
+};
 
 function fmtDate(v) {
   if (!v) return "-";
@@ -21,6 +28,52 @@ function fmtTime(sec) {
   if (!sec || sec <= 0) return "< 1s";
   if (sec < 60) return `~${Math.round(sec)}s`;
   return `~${Math.round(sec / 60)}m`;
+}
+
+function getProgressHint(progress) {
+  if (!progress || progress.stage === "done" || progress.stage === "error") {
+    return "";
+  }
+
+  const provider = String(progress.uploadProvider || "ollama").toLowerCase();
+  const isLocalProvider = provider === "ollama";
+
+  if (progress.stage === "upload") {
+    if (progress.uploadPhase === "awaiting_ack") {
+      return "File transfer finished. Waiting for server acknowledgement before background processing starts.";
+    }
+    return "Uploading file bytes to server. Parsing/OCR/AI starts only after acknowledgement.";
+  }
+
+  if (progress.stage === "processing") {
+    return isLocalProvider
+      ? "Server acknowledged upload. Starting Local AI pipeline now."
+      : "Server acknowledged upload. Starting OCR and cloud AI pipeline now.";
+  }
+
+  if (progress.stage === "parse") {
+    return "Parsing PDF structure and metadata.";
+  }
+
+  if (progress.stage === "ocr") {
+    return "Extracting text with OCR. Scanned pages can take longer in this step.";
+  }
+
+  if (progress.stage === "ai") {
+    return isLocalProvider
+      ? "Running Local AI analysis. Live text below shows conversion and generation progress."
+      : "Running cloud AI extraction. Live text below streams model progress.";
+  }
+
+  if (progress.stage === "routing") {
+    return "Computing recipient routing from extracted intelligence.";
+  }
+
+  if (progress.stage === "saving") {
+    return "Saving extraction and routing results.";
+  }
+
+  return "";
 }
 
 export default function App() {
@@ -81,7 +134,7 @@ export default function App() {
   const [wizStep, setWizStep] = useState(1);
   const [uTitle, setUTitle] = useState("");
   const [uDocType, setUDocType] = useState("circular");
-  const [uProvider, setUProvider] = useState("gemini");
+  const [uProvider, setUProvider] = useState("ollama");
   const [uFile, setUFile] = useState(null);
   const [jobId, setJobId] = useState(null);
   const [jobProgress, setJobProgress] = useState(null);
@@ -100,15 +153,20 @@ export default function App() {
   const [scheduledNotifications, setScheduledNotifications] = useState([]);
   const docDetailCacheRef = useRef(new Map());
   const docDetailAbortRef = useRef(null);
+  const uploadAttemptRef = useRef(null);
 
   // CSV import
   const csvRef = useRef();
 
   // Workflow Settings
   const [settings, setSettings] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("notify_settings")) || {}; }
-    catch { return {}; }
+    try {
+      return { ...DEFAULT_WORKFLOW_SETTINGS, ...(JSON.parse(localStorage.getItem("notify_settings")) || {}) };
+    } catch {
+      return { ...DEFAULT_WORKFLOW_SETTINGS };
+    }
   });
+  const fastMode = settings.fastMode !== false;
   const skipHybridOcr = settings.skipHybridOcr || false;
   const bypassPdfParse = settings.bypassPdfParse || false;
   const aiEnabled = settings.aiEnabled !== false;
@@ -119,6 +177,27 @@ export default function App() {
     setSettings(next);
     localStorage.setItem("notify_settings", JSON.stringify(next));
   };
+
+  useEffect(() => {
+    if (!jobProgress || jobProgress.stage !== "upload") return;
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      setJobProgress((prev) => {
+        if (!prev || prev.stage !== "upload") return prev;
+        const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+        const waitingForAck = prev.uploadPhase === "awaiting_ack";
+        const baseline = waitingForAck
+          ? Math.max(prev.pct || 64, Math.min(67, 64 + Math.floor(elapsed / 15)))
+          : Math.min(60, Math.max(prev.pct || 8, 8 + Math.floor(elapsed / 3)));
+        const label = waitingForAck
+          ? `Upload transfer complete... waiting for server acknowledgement (${elapsed}s)`
+          : `Uploading document to server... ${elapsed}s`;
+        return { ...prev, pct: baseline, label };
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [jobProgress?.stage]);
 
   const navigateSection = useCallback((target) => {
     navigate(`/${target}`);
@@ -157,8 +236,13 @@ export default function App() {
     try {
       const r = await fetch(`${API}/documents`, { headers });
       const d = await r.json();
-      setDocs(d.items || []);
-    } catch (e) { console.error(e); }
+      const items = d.items || [];
+      setDocs(items);
+      return items;
+    } catch (e) {
+      console.error(e);
+      return [];
+    }
   }, [headers]);
 
   const fetchStudents = useCallback(async () => {
@@ -328,9 +412,16 @@ export default function App() {
   // ── Derived data ────────────────────────────────────────────────────────────
   const pendingDocs = useMemo(() => docs.filter(d => d.status === "pending_approval"), [docs]);
   const publishedDocs = useMemo(() => docs.filter(d => d.status === "published"), [docs]);
+  const parserOutput = selectedDoc?.latestVersion?.parserOutput || {};
   const extraction = selectedDoc?.latestVersion?.extraction || {};
   const structured = extraction?.structured || {};
   const events = extraction?.events || [];
+  const extractionWarnings = Array.isArray(extraction?.warnings) ? extraction.warnings : [];
+  const extractionStatus = extraction?.status || "pending";
+  const hasStructuredSections = useMemo(
+    () => Object.values(structured?.sections || {}).some((section) => Array.isArray(section) && section.length > 0),
+    [structured]
+  );
   const scheduleRows = Array.isArray(structured.sections?.schedule) ? structured.sections.schedule : [];
   const scheduleTimeline = useMemo(() => {
     const source = scheduleRows.length > 0 ? scheduleRows : events;
@@ -383,7 +474,21 @@ export default function App() {
     // Close the modal immediately so the user is NOT blocked
     setShowUpload(false);
     setWizStep(1);
-    setJobProgress({ pct: 8, label: "Preparing upload...", stage: "upload" });
+    setJobProgress({ pct: 8, label: "Preparing upload...", stage: "upload", uploadPhase: "transfer", uploadProvider: uProvider });
+    
+    // Per-request key to gate all XHR callbacks and prevent stale handlers from older uploads
+    const attemptKey = `upload-${Date.now()}-${Math.random()}`;
+    const isActiveAttempt = () => uploadAttemptRef.current?.key === attemptKey;
+    
+    uploadAttemptRef.current = {
+      key: attemptKey,
+      title: (uTitle || uFile?.name || "").trim(),
+      fileName: (uFile?.name || "").trim(),
+      startedAt: Date.now(),
+      provider: uProvider,
+      acknowledged: false,
+      jobId: null
+    };
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API}/documents/upload`);
@@ -396,42 +501,99 @@ export default function App() {
     xhr.timeout = 0;
 
     xhr.upload.onprogress = (e) => {
-      if (!e.lengthComputable) return;
+      if (!isActiveAttempt() || !e.lengthComputable) return;
       const percent = 8 + Math.round((e.loaded / e.total) * 52);
-      setJobProgress((prev) => prev ? { ...prev, pct: Math.min(percent, 60), label: "Uploading document..." } : prev);
+      setJobProgress((prev) => prev ? { ...prev, pct: Math.min(percent, 60), label: "Uploading document to server...", uploadPhase: "transfer" } : prev);
     };
 
     xhr.onload = () => {
+      if (!isActiveAttempt()) return;
       try {
         const d = JSON.parse(xhr.responseText || "{}");
         if (xhr.status >= 200 && xhr.status < 300) {
           if (d.jobId) {
+            // Mark this attempt as acknowledged so late transport errors don't override it
+            if (uploadAttemptRef.current) {
+              uploadAttemptRef.current.acknowledged = true;
+              uploadAttemptRef.current.jobId = d.jobId;
+            }
             setJobId(d.jobId);
-            setJobProgress((prev) => prev ? { ...prev, pct: Math.max(prev.pct || 0, 68), label: "Upload accepted. Gemini is processing the document...", stage: "processing" } : { pct: 68, label: "Upload accepted. Gemini is processing the document...", stage: "processing" });
+            setJobProgress((prev) => prev
+              ? {
+                  ...prev,
+                  pct: Math.max(prev.pct || 0, 68),
+                  label: uProvider === "ollama"
+                    ? "Upload acknowledged. Local AI pipeline is starting..."
+                    : "Upload acknowledged. Cloud AI pipeline is starting...",
+                  stage: "processing",
+                  uploadPhase: "acknowledged",
+                  uploadProvider: uProvider
+                }
+              : {
+                  pct: 68,
+                  label: uProvider === "ollama"
+                    ? "Upload acknowledged. Local AI pipeline is starting..."
+                    : "Upload acknowledged. Cloud AI pipeline is starting...",
+                  stage: "processing",
+                  uploadPhase: "acknowledged",
+                  uploadProvider: uProvider
+                });
           } else {
+            uploadAttemptRef.current = null;
             setJobProgress({ pct: 100, label: "Done", stage: "done" });
             fetchDocs();
           }
           return;
         }
 
+        uploadAttemptRef.current = null;
         setJobProgress({ pct: 0, label: `Error: ${d?.error?.message || d?.error || `Upload failed (HTTP ${xhr.status})`}`, stage: "error" });
       } catch (e) {
+        uploadAttemptRef.current = null;
         setJobProgress({ pct: 0, label: "Error: Unable to parse upload response", stage: "error" });
       }
     };
 
     xhr.onerror = () => {
+      if (!isActiveAttempt()) return;
+      
+      // If server already acknowledged, don't show hard error. Show soft notification instead.
+      const attempt = uploadAttemptRef.current;
+      if (attempt?.acknowledged) {
+        setJobProgress((prev) => prev ? {
+          ...prev,
+          label: "Connection hiccup after acknowledgement. Continuing background processing...",
+          uploadPhase: "acknowledged"
+        } : prev);
+        return;
+      }
+      
+      uploadAttemptRef.current = null;
       setJobProgress({ pct: 0, label: "Error: Network error while uploading document", stage: "error" });
     };
 
     xhr.upload.onload = () => {
+      if (!isActiveAttempt()) return;
       setJobProgress((prev) => prev
-        ? { ...prev, pct: Math.max(prev.pct || 0, 64), label: "Upload sent. Waiting for server acknowledgement...", stage: "upload" }
-        : { pct: 64, label: "Upload sent. Waiting for server acknowledgement...", stage: "upload" });
+        ? { ...prev, pct: Math.max(prev.pct || 0, 64), label: "Upload transfer finished. Waiting for server acknowledgement...", stage: "upload", uploadPhase: "awaiting_ack" }
+        : { pct: 64, label: "Upload transfer finished. Waiting for server acknowledgement...", stage: "upload", uploadPhase: "awaiting_ack", uploadProvider: uProvider });
     };
 
     xhr.ontimeout = () => {
+      if (!isActiveAttempt()) return;
+      
+      // If server already acknowledged, don't show timeout error. Show soft notification instead.
+      const attempt = uploadAttemptRef.current;
+      if (attempt?.acknowledged) {
+        setJobProgress((prev) => prev ? {
+          ...prev,
+          label: "Connection timeout after acknowledgement. Continuing background processing...",
+          uploadPhase: "acknowledged"
+        } : prev);
+        return;
+      }
+      
+      uploadAttemptRef.current = null;
       setJobProgress({ pct: 0, label: "Error: Upload timed out before server accepted the file", stage: "error" });
     };
 
@@ -442,6 +604,7 @@ export default function App() {
     if (!jobId) return;
     try {
       await fetch(`${API}/jobs/${jobId}/cancel`, { method: "POST", headers: jsonHeaders });
+      uploadAttemptRef.current = null;
       setJobId(null);
       setJobProgress({ pct: 0, label: "Cancelled by user", stage: "error" });
     } catch(e) {}
@@ -452,12 +615,69 @@ export default function App() {
     if (!jobId) return;
     let active = true;
     let consecutiveFailures = 0;
+    let consecutive404 = 0;
+
+    const tryRecoverFromMissingJob = async () => {
+      const items = await fetchDocs();
+      const attempt = uploadAttemptRef.current;
+      if (!attempt) {
+        return false;
+      }
+
+      const attemptTitle = (attempt.title || "").toLowerCase();
+      const startedAt = Number(attempt.startedAt || 0);
+
+      const exactTitleMatch = items.find((doc) => (doc.title || "").trim().toLowerCase() === attemptTitle);
+      const closestByTime = items
+        .filter((doc) => {
+          const createdAt = new Date(doc.createdAt || 0).getTime();
+          return Number.isFinite(createdAt) && startedAt > 0 && Math.abs(createdAt - startedAt) <= 20 * 60 * 1000;
+        })
+        .sort((a, b) => {
+          const aDelta = Math.abs(new Date(a.createdAt || 0).getTime() - startedAt);
+          const bDelta = Math.abs(new Date(b.createdAt || 0).getTime() - startedAt);
+          return aDelta - bDelta;
+        })[0];
+
+      const recoveredDoc = exactTitleMatch || closestByTime;
+      if (!recoveredDoc) {
+        return false;
+      }
+
+      if (!active) {
+        return true;
+      }
+
+      setJobId(null);
+      setJobProgress({
+        pct: 100,
+        stage: "done",
+        label: "Processing finished. Progress tracker reset; recovered from document list."
+      });
+      setSelectedDocId(recoveredDoc.id);
+      navigate(`/documents/${encodeURIComponent(recoveredDoc.id)}`);
+      uploadAttemptRef.current = null;
+      return true;
+    };
 
     const poll = async () => {
       try {
         const r = await fetch(`${API}/jobs/${jobId}`, { headers });
         if (!r.ok) {
           consecutiveFailures += 1;
+          if (r.status === 404) {
+            consecutive404 += 1;
+          } else {
+            consecutive404 = 0;
+          }
+
+          if (active && r.status === 404 && consecutive404 >= 5) {
+            const recovered = await tryRecoverFromMissingJob();
+            if (recovered) {
+              return;
+            }
+          }
+
           if (active && consecutiveFailures >= 20) {
             setJobProgress((prev) => prev ? {
               ...prev,
@@ -478,9 +698,16 @@ export default function App() {
         }
 
         consecutiveFailures = 0;
+        consecutive404 = 0;
         const job = await r.json();
-        if (active) setJobProgress(job);
+        if (active) {
+          setJobProgress((prev) => ({
+            ...job,
+            uploadProvider: uploadAttemptRef.current?.provider || prev?.uploadProvider || "ollama"
+          }));
+        }
         if (job.stage === "done" || job.stage === "error") {
+          uploadAttemptRef.current = null;
           fetchDocs();
           return;
         }
@@ -507,7 +734,7 @@ export default function App() {
     };
     poll();
     return () => { active = false; };
-  }, [jobId]);
+  }, [jobId, headers, fetchDocs, navigate]);
 
   async function prepareReviewContext(doc) {
     if (!doc?.id) return null;
@@ -699,6 +926,8 @@ export default function App() {
   const openCompose = useCallback(() => {
     navigate(`/notifications/compose${location.search || ""}`);
   }, [navigate, location.search]);
+
+  const progressHint = getProgressHint(jobProgress);
 
   if (!authed) {
     return (
@@ -929,7 +1158,7 @@ export default function App() {
                   )}
 
                   <div className="detail-tabs">
-                    {["file", "intelligence", "schedule", "routing", "recipients", "raw"].map(t => (
+                      {["file", "intelligence", "trace", "schedule", "routing", "recipients", "raw"].map(t => (
                       <button
                         key={t}
                         className={`detail-tab ${detailTab === t ? "active" : ""}`}
@@ -940,7 +1169,19 @@ export default function App() {
                           }
                         }}
                       >
-                        {t === "file" ? "📄 File" : t === "intelligence" ? "🧠 Intelligence" : t === "schedule" ? "📅 Schedule" : t === "routing" ? "🔀 Routing" : t === "recipients" ? `👥 Recipients (${recipients.length})` : "{ } Raw Data"}
+                        {t === "file"
+                          ? "📄 File"
+                          : t === "intelligence"
+                            ? "🧠 Intelligence"
+                            : t === "trace"
+                              ? "🔎 AI Trace"
+                              : t === "schedule"
+                                ? "📅 Schedule"
+                                : t === "routing"
+                                  ? "🔀 Routing"
+                                  : t === "recipients"
+                                    ? `👥 Recipients (${recipients.length})`
+                                    : "{ } Raw Data"}
                       </button>
                     ))}
                   </div>
@@ -1004,6 +1245,72 @@ export default function App() {
                           <span className={`badge ${extraction.provider}`}>{extraction.provider}</span>
                           <span className="badge secondary">{extraction.model}</span>
                         </div>
+                      </div>
+                    </>
+                  )}
+
+                  {/* TRACE */}
+                  {detailTab === "trace" && (
+                    <>
+                      <div className="intelligence-grid mb-3">
+                        <div className="intel-card">
+                          <div className="intel-card-label">Processing Status</div>
+                          <div className="flex gap-2 mt-2">
+                            <span className={`badge ${extractionStatus === "completed" ? "success" : extractionStatus === "failed" ? "failed" : "pending"}`}>{extractionStatus}</span>
+                            <span className={`badge ${extraction.provider || "secondary"}`}>{extraction.provider || "unknown"}</span>
+                          </div>
+                        </div>
+                        <div className="intel-card">
+                          <div className="intel-card-label">Model</div>
+                          <div className="intel-card-value">{extraction.model || "-"}</div>
+                        </div>
+                        <div className="intel-card">
+                          <div className="intel-card-label">Parser Stats</div>
+                          <div className="intel-card-value">{parserOutput.pageCount || 0} pages</div>
+                          <div className="text-sm text-muted mt-1">{(parserOutput.rawTextLength || 0).toLocaleString()} chars extracted</div>
+                        </div>
+                        <div className="intel-card">
+                          <div className="intel-card-label">Trace Coverage</div>
+                          <div className="intel-card-value">{events.length} events</div>
+                          <div className="text-sm text-muted mt-1">{hasStructuredSections ? "Structured sections detected" : "No structured sections"}</div>
+                        </div>
+                      </div>
+
+                      <div className="intel-card mb-3">
+                        <div className="intel-card-label">Warnings</div>
+                        {extractionWarnings.length > 0 ? (
+                          <ul style={{ marginTop: 10, paddingLeft: 18, display: "grid", gap: 8 }}>
+                            {extractionWarnings.map((warning, index) => (
+                              <li key={index} className="text-sm" style={{ color: "var(--warning-text, #92400e)" }}>{warning}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div className="text-sm text-muted mt-2">No warnings emitted by the extractor.</div>
+                        )}
+                      </div>
+
+                      <div className="intel-card">
+                        <div className="intel-card-label">Line-by-Line Extraction Trace</div>
+                        {events.length > 0 ? (
+                          <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+                            {events.map((event, index) => (
+                              <div key={event.eventId || index} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", background: "var(--main-bg)" }}>
+                                <div style={{ fontWeight: 700, fontSize: 13, color: "var(--text)" }}>
+                                  {index + 1}. {event.subjectName || event.subjectCode || event.eventId || "Untitled event"}
+                                </div>
+                                <div className="text-sm text-muted" style={{ marginTop: 4 }}>
+                                  {event.date || "TBA"} {event.startTime ? `• ${event.startTime}` : ""}{event.endTime ? ` → ${event.endTime}` : ""}
+                                </div>
+                                <div className="text-sm" style={{ marginTop: 4 }}>
+                                  {(event.departments || []).concat(event.years || []).concat(event.sections || []).filter(Boolean).join(" • ") || "General audience"}
+                                </div>
+                                {event.instructions && <div className="text-sm text-muted" style={{ marginTop: 4 }}>Note: {event.instructions}</div>}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-sm text-muted mt-2">No extracted events are available for this document.</div>
+                        )}
                       </div>
                     </>
                   )}
@@ -1159,7 +1466,18 @@ export default function App() {
                   )}
 
                   {/* RAW DATA */}
-                  {detailTab === "raw" && <pre className="json-view">{JSON.stringify(extraction, null, 2)}</pre>}
+                  {detailTab === "raw" && (
+                    <>
+                      <div className="intel-card mb-3">
+                        <div className="intel-card-label">Parser Output (metadata)</div>
+                        <pre className="json-view" style={{ marginTop: 10 }}>{JSON.stringify(parserOutput, null, 2)}</pre>
+                      </div>
+                      <div className="intel-card">
+                        <div className="intel-card-label">Extraction Output (full debug JSON)</div>
+                        <pre className="json-view" style={{ marginTop: 10 }}>{JSON.stringify(extraction, null, 2)}</pre>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -1287,7 +1605,7 @@ export default function App() {
                   <div className="form-group">
                     <label className="form-label">Default Provider</label>
                     <select className="form-select" value={uProvider} onChange={e => setUProvider(e.target.value)}>
-                      <option value="ollama">Local AI (Qwen2.5-VL 3B via Ollama)</option>
+                      <option value="ollama">Local AI (Gemma4:e2b via Ollama)</option>
                       <option value="gemini">Cloud AI (Gemini)</option>
                       <option value="azure_vision">Azure Computer Vision OCR + Cloud AI</option>
                     </select>
@@ -1307,6 +1625,11 @@ export default function App() {
                     <input type="checkbox" checked={aiEnabled} onChange={e => updateSetting("aiEnabled", e.target.checked)} />
                     <strong>Enable AI Processing</strong>
                     <span className="text-muted ml-1">(If disabled, only local text heuristics run)</span>
+                  </label>
+                  <label className="flex items-center gap-2 mb-3 cursor-pointer text-sm">
+                    <input type="checkbox" checked={fastMode} onChange={e => updateSetting("fastMode", e.target.checked)} />
+                    <strong>Fast Mode (Recommended)</strong>
+                    <span className="text-muted ml-1">(Skips slow Python OCR warm-up and prioritizes quick Gemini/local parsing)</span>
                   </label>
                   <label className="flex items-center gap-2 mb-3 cursor-pointer text-sm">
                     <input type="checkbox" checked={useFallbacks} onChange={e => updateSetting("useFallbacks", e.target.checked)} disabled={!aiEnabled} />
@@ -1348,7 +1671,7 @@ export default function App() {
                 <>
                   <div className="form-group"><label className="form-label">Title</label><input className="form-input" value={uTitle} onChange={e => setUTitle(e.target.value)} placeholder="Document title" /></div>
                   <div className="form-group"><label className="form-label">Type</label><select className="form-select" value={uDocType} onChange={e => setUDocType(e.target.value)}><option value="circular">Circular</option><option value="exam_timetable">Timetable</option><option value="notice">Notice</option></select></div>
-                  <div className="form-group"><label className="form-label">AI Model</label><select className="form-select" value={uProvider} onChange={e => setUProvider(e.target.value)}><option value="ollama">Local AI (Qwen2.5-VL 3B via Ollama)</option><option value="gemini">Cloud AI (Gemini)</option><option value="azure_vision">Azure Computer Vision OCR + Cloud AI</option></select></div>
+                  <div className="form-group"><label className="form-label">AI Model</label><select className="form-select" value={uProvider} onChange={e => setUProvider(e.target.value)}><option value="ollama">Local AI (Gemma4:e2b via Ollama)</option><option value="gemini">Cloud AI (Gemini)</option><option value="azure_vision">Azure Computer Vision OCR + Cloud AI</option></select></div>
                   <button className="btn btn-primary btn-full mt-3" onClick={() => setWizStep(2)}>Next →</button>
                 </>
               )}
@@ -1410,9 +1733,9 @@ export default function App() {
             <div className={`progress-step-label ${jobProgress.stage !== "done" && jobProgress.stage !== "error" ? "spinning" : ""}`}>
               {jobProgress.stage === "done" ? "✅" : jobProgress.stage === "error" ? "❌" : "🔔"} {jobProgress.label || "Processing..."}
             </div>
-            {jobProgress.stage === "processing" && (
+            {progressHint && (
               <div className="text-sm text-muted" style={{ marginTop: 4, width: "100%" }}>
-                The file is uploaded. Gemini/OCR is now running and may take a while on scanned PDFs.
+                {progressHint}
               </div>
             )}
             {(jobProgress.stage !== "done" && jobProgress.stage !== "error") && (
@@ -1425,6 +1748,9 @@ export default function App() {
           <div className="progress-track" style={{ height: 6 }}>
             <div className={`progress-fill ${jobProgress.stage === "done" ? "done" : jobProgress.stage === "error" ? "error" : ""}`} style={{ width: `${jobProgress.pct || 5}%` }} />
           </div>
+          {jobProgress.liveText && jobProgress.stage !== "done" && jobProgress.stage !== "error" && (
+            <div className="progress-live-text" title={jobProgress.liveText}>{jobProgress.liveText}</div>
+          )}
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
             <span className="progress-pct">{jobProgress.pct || 0}%{jobProgress.elapsedSec ? ` · ${jobProgress.elapsedSec}s` : ""}</span>
             {jobProgress.estimatedRemainingSec > 0 && <span className="progress-eta">ETA: {fmtTime(jobProgress.estimatedRemainingSec)}</span>}

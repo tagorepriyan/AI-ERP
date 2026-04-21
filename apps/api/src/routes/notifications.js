@@ -113,11 +113,9 @@ router.post("/compose", upload.single("file"), async (req, res, next) => {
       return res.status(400).json({ error: { message: "Content or file is required" } });
     }
 
-    // Find matching students
+    // Find matching students — select ONLY _id for speed
     const query = buildFilterQuery(filters, req.tenantId);
-    const students = await Student.find(query)
-      .select("registrationNo fullName department year semester section role")
-      .lean();
+    const students = await Student.find(query).select("_id fullName department year role").lean();
 
     if (students.length === 0) {
       return res.status(400).json({ error: { message: "No recipients matched the given filters" } });
@@ -187,38 +185,45 @@ router.post("/compose", upload.single("file"), async (req, res, next) => {
       }
     }));
 
-    const result = await NotificationLog.insertMany(logDocs, { ordered: false });
-
-    // If scheduled, set a timer (in-memory MVP)
-    if (isScheduled) {
-      const delay = new Date(scheduledAt).getTime() - Date.now();
-      setTimeout(async () => {
-        try {
-          const ids = result.map(r => r._id);
-          await NotificationLog.updateMany(
-            { _id: { $in: ids }, status: "scheduled" },
-            {
-              $set: {
-                status: "delivered",
-                sentAt: new Date(),
-                "channels.inApp.sent": true,
-                "channels.inApp.sentAt": new Date()
-              }
-            }
-          );
-          console.log(`[scheduler] Delivered ${ids.length} scheduled notifications`);
-        } catch (e) {
-          console.error("[scheduler] Failed:", e.message);
-        }
-      }, Math.max(delay, 1000));
-    }
-
-    res.status(201).json({
+    // ── Fire-and-forget async insert ─────────────────────────────────────────
+    // Respond to the client IMMEDIATELY — don't wait for DB inserts.
+    res.status(202).json({
       success: true,
-      recipientCount: result.length,
+      recipientCount: students.length,
       status,
       scheduledAt: isScheduled ? scheduledAt : null
     });
+
+    // Background insert (no await, runs after response is sent)
+    Promise.resolve().then(async () => {
+      try {
+        let resolvedDocumentId = documentId;
+
+        if (req.file && !resolvedDocumentId) {
+          // If file already saved above, this block won't re-run
+        }
+
+        const result = await NotificationLog.insertMany(logDocs, { ordered: false });
+
+        // Handle scheduled delivery timer in background
+        if (isScheduled) {
+          const delay = new Date(scheduledAt).getTime() - Date.now();
+          setTimeout(async () => {
+            try {
+              const ids = result.map(r => r._id);
+              await NotificationLog.updateMany(
+                { _id: { $in: ids }, status: "scheduled" },
+                { $set: { status: "delivered", sentAt: new Date(), "channels.inApp.sent": true, "channels.inApp.sentAt": new Date() } }
+              );
+              console.log(`[scheduler] Delivered ${ids.length} scheduled notifications`);
+            } catch (e) { console.error("[scheduler] Failed:", e.message); }
+          }, Math.max(delay, 1000));
+        }
+      } catch (e) {
+        console.error("[compose:bg] Insert failed:", e.message);
+      }
+    });
+
   } catch (err) {
     next(err);
   }

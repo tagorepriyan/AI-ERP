@@ -124,7 +124,8 @@ async function runPythonHybridParser(filePath, signal) {
       const { stdout } = await execFilePromise(candidate.command, candidate.args, {
         windowsHide: true,
         maxBuffer: 10 * 1024 * 1024,
-        signal
+        signal,
+        timeout: env.ai.hybridOcrTimeoutMs
       });
       return parseHybridOutput(stdout);
     } catch (error) {
@@ -135,7 +136,7 @@ async function runPythonHybridParser(filePath, signal) {
   throw lastError || new Error("Unable to execute Python hybrid OCR script");
 }
 
-async function parsePdf(filePath, signal, skipHybridOcr = false, bypassPdfParse = false, provider = "gemini") {
+async function parsePdf(filePath, signal, skipHybridOcr = false, bypassPdfParse = false, provider = "gemini", fastMode = true) {
   const ext = path.extname(filePath || "").toLowerCase();
 
   const textExtensions = new Set([".txt", ".md", ".csv", ".json", ".log", ".xml", ".yaml", ".yml"]);
@@ -175,6 +176,19 @@ async function parsePdf(filePath, signal, skipHybridOcr = false, bypassPdfParse 
     return { rawText: "", pageCount: 0 };
   }
 
+  if (fastMode && provider === "gemini") {
+    const quick = await fallbackParse(filePath);
+    if ((quick.rawText || "").trim().length > 100) {
+      return quick;
+    }
+
+    // Fast path for scanned PDFs: skip heavy Python OCR startup and let Gemini handle file vision directly.
+    return {
+      rawText: "",
+      pageCount: quick.pageCount || 0
+    };
+  }
+
   if (skipHybridOcr) {
     console.log(`[pdfParser] Skipping hybrid OCR as requested. Falling back to pure Node pdf-parse.`);
     return await fallbackParse(filePath);
@@ -211,7 +225,11 @@ async function parsePdf(filePath, signal, skipHybridOcr = false, bypassPdfParse 
       structuredData: result // Pass the whole object (structure_type: 'grid_timetable')
     };
   } catch (error) {
-    console.error(`[Python hybrid parser failed]`, error.message);
+    if (error && error.killed) {
+      console.warn(`[Python hybrid parser timed out after ${env.ai.hybridOcrTimeoutMs}ms] Falling back to pure Node pdf-parse...`);
+    } else {
+      console.error(`[Python hybrid parser failed]`, error.message);
+    }
     console.warn("Falling back to pure Node pdf-parse...");
     return await fallbackParse(filePath);
   }

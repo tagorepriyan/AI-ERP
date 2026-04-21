@@ -19,6 +19,20 @@ router.get("/me", async (req, res, next) => {
   }
 });
 
+// ── GET /students/all — lightweight dump for client-side targeting ────────────
+// Returns only the fields TargetingEditor needs. Very fast with indexed query.
+router.get("/all", async (req, res, next) => {
+  try {
+    const students = await Student
+      .find({ tenantId: req.tenantId, isActive: true })
+      .select("_id registrationNo fullName department year semester section role isHostelStudent hasArrears")
+      .sort({ department: 1, year: 1, fullName: 1 })
+      .limit(2000)
+      .lean();
+    res.json({ count: students.length, students });
+  } catch (err) { next(err); }
+});
+
 // ── GET /students ─────────────────────────────────────────────────────────────
 router.get("/", async (req, res, next) => {
   try {
@@ -42,6 +56,7 @@ router.get("/", async (req, res, next) => {
     next(err);
   }
 });
+
 
 // ── POST /students — create one ───────────────────────────────────────────────
 router.post("/", async (req, res, next) => {

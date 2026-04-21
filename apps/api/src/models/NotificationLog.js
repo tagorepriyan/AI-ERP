@@ -88,5 +88,8 @@ const notificationLogSchema = new mongoose.Schema(
 notificationLogSchema.index({ tenantId: 1, documentId: 1, userId: 1 }, { unique: true, sparse: true });
 notificationLogSchema.index({ tenantId: 1, status: 1, createdAt: -1 });
 notificationLogSchema.index({ tenantId: 1, scheduledAt: 1, status: 1 });
+// ── Covering index for student portal query: GET /notifications?userId=X&status=delivered
+notificationLogSchema.index({ userId: 1, status: 1, sentAt: -1 });
+
 
 module.exports = mongoose.model("NotificationLog", notificationLogSchema);

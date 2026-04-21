@@ -80,7 +80,16 @@ const studentSchema = new mongoose.Schema(
 );
 
 studentSchema.index({ tenantId: 1, registrationNo: 1 }, { unique: true });
-studentSchema.index({ tenantId: 1, department: 1, year: 1, isHostelStudent: 1 });
-studentSchema.index({ tenantId: 1, hasArrears: 1 });
+
+// ── Performance indexes for targeting queries ─────────────────────────────────
+// These turn O(n) collection scans into O(log n) index scans
+studentSchema.index({ tenantId: 1, isActive: 1, department: 1, year: 1 });
+studentSchema.index({ tenantId: 1, isActive: 1, year: 1, semester: 1 });
+studentSchema.index({ tenantId: 1, isActive: 1, role: 1 });
+studentSchema.index({ tenantId: 1, isActive: 1, isHostelStudent: 1 });
+studentSchema.index({ tenantId: 1, isActive: 1, hasArrears: 1 });
+// Covering index for countDocuments on all-students query
+studentSchema.index({ tenantId: 1, isActive: 1 });
+
 
 module.exports = mongoose.model("Student", studentSchema);
